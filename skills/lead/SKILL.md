@@ -14,10 +14,11 @@ The CLI enforces most of the rules: the build lock, the brief, the Result, who g
 ## Starting a room
 
 1. `rooms new <room> "<Title>"`. Add `--feature` when you build something for users: that adds `PRD.md` and locks building until the owner agrees it. Fixes, migrations, research and chores get no PRD.
-2. Fill in `BRIEF.md`: goal, scope, the `## Team` charters (role, model tier, what it owns and doesn't), and where the code is (`code: <branch> at <worktree>`). One session leads one room. A new project gets a new room and a new session.
-3. Write each framing assumption as a premise: `rooms ask <room> "<assumption, in the owner's words if they gave them>" --premise`. Wait for a yes on any you inferred.
-4. **Feature rooms:** draft `PRD.md` yourself (120 lines at most: purpose, stakeholders, goals and non-goals, numbered testable requirements, constraints, phases, definition of done). Give every open question an owner record. Sign it on the `Lead:` line, optionally have a reviewer worker check it, then `rooms prd <room> review`. Until it is agreed, only research items run (`rooms add --research`, capped at 4h, three open at most).
-5. **Plan the whole graph before anything starts.** Make one item per piece of work, at most about 6h each:
+2. **Bring up the page before the first card.** The owner answers there, and `rooms serve` also runs the sweep that delivers events and commits. If the `claude-rooms` user service is active, use it. Otherwise run `ROOMS_USERS=<owner's tailnet login> rooms serve --port <free port> --host 127.0.0.1` in the background. Pick a port that `ss -ltn` shows free, because 8787 may belong to another tool. If the machine is on a tailnet (`tailscale status` works), serve the page there: `tailscale serve --bg --set-path /rooms http://127.0.0.1:<port>`. `ROOMS_USERS` must be set before you do. Without it, a loopback server accepts every write, and the tailnet would reach it. Put the page URL under "Where things are" in `BRIEF.md` and in your first reply to the owner.
+3. Fill in `BRIEF.md`: goal, scope, the `## Team` charters (role, model tier, what it owns and doesn't), and where the code is (`code: <branch> at <worktree>`). One session leads one room. A new project gets a new room and a new session.
+4. Write each framing assumption as a premise: `rooms ask <room> "<assumption, in the owner's words if they gave them>" --premise`. Wait for a yes on any you inferred.
+5. **Feature rooms:** draft `PRD.md` yourself (120 lines at most: purpose, stakeholders, goals and non-goals, numbered testable requirements, constraints, phases, definition of done). Give every open question an owner record. Sign it on the `Lead:` line, optionally have a reviewer worker check it, then `rooms prd <room> review`. Until it is agreed, only research items run (`rooms add --research`, capped at 4h, three open at most).
+6. **Plan the whole graph before anything starts.** Make one item per piece of work, at most about 6h each:
    `rooms add <room> "<title>" --acc "<testable line>" --in "<file, record or upstream item it reads>" --dep T01 --cap 2 --owner <role> --tier light|standard|review`
    Items that can run in parallel have no dependency between them. Items that touch the same files or service get a `--locks` name.
 
@@ -31,7 +32,7 @@ The CLI enforces most of the rules: the build lock, the brief, the Result, who g
   - *the owner answered:* it is already recorded. Act on it and don't ask again.
   - *the owner asked a question on a card:* `rooms answer <room> D05 --reply "<answer>"`. The card stays open, and you never answer it yourself.
   - *a worker stopped without reporting:* read its Log, then tell it what is missing or re-plan.
-- **Before you end a turn:** `rooms status <room> --yield`. If it exits non-zero, the room would be stuck: dispatch, ask a real question, set `waiting:` and `resume:` in `now-head.md` for an outside wait, or close the room. Update `now-head.md` (phase, plus one short note for the owner) when the picture changes.
+- **Before you end a turn:** check that the page still answers (`curl` the URL in `BRIEF.md`). A page you started inside your own session stops with that session, so start it again (step 2) if it's down. Then `rooms status <room> --yield`. If it exits non-zero, the room would be stuck: dispatch, ask a real question, set `waiting:` and `resume:` in `now-head.md` for an outside wait, or close the room. Update `now-head.md` (phase, plus one short note for the owner) when the picture changes.
 
 ## The owner's cards
 
