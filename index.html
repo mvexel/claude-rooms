@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-rooms</title>
+<meta name="description" content="Rooms for Claude Code agent teams: a lead, workers, decision cards on a phone page, and a record in plain markdown.">
+<style>
+  :root { color-scheme: light dark; --ink: #1b1b1a; --muted: #5d5b55; --line: #dedcd5; --code: #f3f2ee; --accent: #1d5fb0; }
+  @media (prefers-color-scheme: dark) { :root { --ink: #ecebe6; --muted: #aaa79e; --line: #34332f; --code: #23221f; --accent: #7fb2f5; } }
+  body { font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); max-width: 46rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+  h1 { font-size: 1.9rem; margin-bottom: 0.2rem; }
+  h2 { margin-top: 2.6rem; padding-top: 0.6rem; border-top: 1px solid var(--line); }
+  h3 { margin-top: 1.6rem; }
+  a { color: var(--accent); }
+  code, pre { font: 0.88em/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); border-radius: 4px; }
+  code { padding: 0.1em 0.3em; }
+  pre { padding: 0.8rem 1rem; overflow-x: auto; }
+  pre code { padding: 0; background: none; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.94em; }
+  th, td { text-align: left; vertical-align: top; padding: 0.35rem 0.6rem 0.35rem 0; border-bottom: 1px solid var(--line); }
+  .lead { color: var(--muted); font-size: 1.08rem; margin-top: 0; }
+  nav { font-size: 0.94em; }
+  nav a { margin-right: 0.8rem; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<h1>claude-rooms</h1>
+<p class="lead">Rooms for Claude Code agent teams: a lead, workers, decision cards on a phone page, and a record in plain markdown.</p>
+
+<nav>
+  <a href="#idea">The idea</a>
+  <a href="#install">Install</a>
+  <a href="#first-room">Your first room</a>
+  <a href="#cards">Cards</a>
+  <a href="#where">Where it runs</a>
+  <a href="#records">Records</a>
+  <a href="#commands">Commands</a>
+  <a href="#config">Configuration</a>
+  <a href="#trouble">Troubleshooting</a>
+</nav>
+
+<h2 id="idea">The idea</h2>
+
+<p>A <strong>room</strong> is one project. It has:</p>
+<ul>
+  <li>a <strong>lead</strong>, a Claude Code session that plans the work, starts workers, keeps the record and asks you what only you can decide;</li>
+  <li><strong>workers</strong>, background Claude Code sessions that each do one item in their own git worktree;</li>
+  <li><strong>you</strong>, the owner, answering decision cards on a phone page or in chat;</li>
+  <li>a <strong>record</strong>: plain markdown files in a git repo of their own (<code>~/rooms</code>), which outlive every session.</li>
+</ul>
+
+<p>The record is the memory, not any conversation. A lead can be a long-lived session you talk to, or a short one-shot turn started for a batch of events. Both read the same files and act the same way.</p>
+
+<p>Most of the rules live in the <code>rooms</code> command, not in prompts: it refuses to start build work before a feature's PRD is agreed, refuses to mark an item done without a result and a successor, and decides which questions reach you.</p>
+
+<h2 id="install">Install</h2>
+
+<p>You need Node 24 or newer, git, and Claude Code.</p>
+
+<pre><code>git clone https://github.com/mvexel/claude-rooms ~/dev/claude-rooms
+~/dev/claude-rooms/cli/rooms.ts install   # links `rooms` into ~/.local/bin
+rooms init                                 # creates ~/rooms, the records repo</code></pre>
+
+<p>Install the plugin for all your sessions. At a Claude Code prompt:</p>
+
+<pre><code>/plugin marketplace add ~/dev/claude-rooms
+/plugin install rooms@mvexel-rooms</code></pre>
+
+<p>Or from a shell: <code>claude plugin marketplace add ~/dev/claude-rooms</code> and <code>claude plugin install rooms@mvexel-rooms --scope user</code>. Sessions that are already open pick it up with <code>/reload-plugins</code>.</p>
+
+<h3>The page server</h3>
+
+<p><code>rooms serve</code> runs the phone page and a sweep every 15 seconds that delivers events, applies due defaults and commits the record. Run it as a user service:</p>
+
+<pre><code>cp ~/dev/claude-rooms/deploy/claude-rooms.service ~/.config/systemd/user/
+systemctl --user enable --now claude-rooms</code></pre>
+
+<p>To reach the page from your phone over Tailscale, set <code>ROOMS_USERS</code> to your Tailscale login in the unit first (only those logins can answer; the server refuses to listen beyond loopback without it), then:</p>
+
+<pre><code>tailscale serve --bg --set-path /rooms http://127.0.0.1:8787</code></pre>
+
+<p>Optional: add a git remote to <code>~/rooms</code>. Commits are then mirrored in the background; nothing waits on a push.</p>
+
+<h2 id="first-room">Your first room</h2>
+
+<ol>
+  <li><strong>Ask for it.</strong> In any Claude Code session: “Start a room for the export feature.” The session loads the lead skill and becomes the room's lead: <code>rooms new export "CSV export" --feature</code>. Use <code>--feature</code> for something you build for users; fixes, chores and research get no PRD.</li>
+  <li><strong>Premises.</strong> The lead writes down what it assumes, as premise cards. You see them on the page and tap yes or no.</li>
+  <li><strong>The PRD</strong> (feature rooms only). The lead drafts <code>PRD.md</code>: purpose, goals and non-goals, numbered testable requirements, definition of done, 120 lines at most. While it drafts, only research items may run. When it's ready you get an “Agree the PRD?” card; agreeing opens building.</li>
+  <li><strong>The plan.</strong> The lead adds one item per piece of work, each with acceptance lines, inputs, dependencies, a cap in hours and a model tier. Items with no dependency between them run in parallel.</li>
+  <li><strong>Workers.</strong> <code>rooms spawn export T03 --repo ~/code/app</code> gives the item its own worktree and branch, a scratch folder, and a background session on the item's tier. The worker logs as it goes and finishes with <code>rooms done</code>, which tells the lead.</li>
+  <li><strong>Your part.</strong> Cards arrive on the page, most blocking first. Tap an option; you have a few seconds to undo. The receipt says when the lead has read it. You can also type <code>D05 b</code> to the lead in chat; it is recorded before the lead reads it.</li>
+  <li><strong>Closing.</strong> When the definition of done holds and the work is merged, the lead runs <code>rooms close export "shipped in 1.4"</code>. Follow-up work gets a new room.</li>
+</ol>
+
+<p>At any time, <code>rooms status</code> shows every room, and <code>rooms chat export</code> opens the room's lead in your terminal.</p>
+
+<h2 id="cards">Who gets asked what</h2>
+
+<p>Only decisions that are yours reach you. The lead chooses the kind; the command routes it.</p>
+
+<table>
+  <tr><th>Kind</th><th>Example</th><th>Reaches you as</th></tr>
+  <tr><td>Hard to undo</td><td>a public name, an API field, merging to main, a deploy, spending</td><td>a card with options and the team's pick</td></tr>
+  <tr><td>Reversible but worth knowing</td><td>scope or order of work</td><td>“going ahead unless you stop it”, with a time; it applies itself if you don't</td></tr>
+  <tr><td>Premise</td><td>“the export runs on the existing job queue”</td><td>a yes / no card</td></tr>
+  <tr><td>Something only you can do</td><td>create an API token, approve an account</td><td>a task with exact steps and a Done button</td></tr>
+  <tr><td>Free-text answer</td><td>a name, a date</td><td>a text box</td></tr>
+  <tr><td>Engineering choice</td><td>which index type</td><td>nothing: the team decides and writes it down</td></tr>
+</table>
+
+<p>On any card you can ask a question instead of answering; the card waits until the lead replies.</p>
+
+<h2 id="where">Where it runs</h2>
+
+<p>A room runs on one machine: its lead and worker sessions, the records in <code>~/rooms</code>, and <code>rooms serve</code>. That can be your laptop (rooms pause while it sleeps; nothing is lost) or an always-on host, where rooms keep moving while you are away.</p>
+
+<p>Never run the same <code>~/rooms</code> on two machines at once: event inboxes and the session list are local, so two hosts would each start their own lead turns. A git remote is a backup and a way to read records elsewhere, not a sync.</p>
+
+<table>
+  <tr><th>From another machine, to</th><th>Do</th></tr>
+  <tr><td>Answer cards, pause, wake a lead</td><td>open the page over your tailnet</td></tr>
+  <tr><td>Talk to a room's lead</td><td><code>ssh host -t rooms chat &lt;room&gt;</code></td></tr>
+  <tr><td>Work in the rooms</td><td><code>ssh host -t 'cd ~/rooms &amp;&amp; claude'</code></td></tr>
+  <tr><td>Chat with a lead from claude.ai/code or the app</td><td>start it on the host with <code>claude --remote-control lead-&lt;room&gt;</code> in <code>~/rooms</code>, then <code>rooms lead &lt;room&gt;</code> inside it</td></tr>
+</table>
+
+<h3>How the lead hears things</h3>
+
+<p>Taps, finished items, needs and due defaults become <strong>events</strong> in the room's inbox. If the lead session is open with the plugin, it takes them between tool calls (no extra turn) or as one prompt when idle. If no lead is running, a one-shot lead turn (<code>claude -p</code> in <code>~/rooms</code>) handles them and exits. A running session is never resumed from outside, because that would fork it.</p>
+
+<h2 id="records">Records</h2>
+
+<p>Every record is a markdown file: <code>key: value</code> lines between <code>---</code> markers, then <code>## Section</code> bodies. Edit them freely; the commands keep the rest in step.</p>
+
+<pre><code>~/rooms/&lt;room&gt;/
+  BRIEF.md              charter and wiring
+  PRD.md                feature rooms only
+  now-head.md           the lead's current position
+  items/T01-*.md        work items
+  decisions/D01-*.md    decisions (D), premises (P), asks and tasks (A)
+  refinements/RF01-*.md changes to an agreed PRD
+  notes/                long-form notes, one writer per file</code></pre>
+
+<h3>BRIEF.md</h3>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>title</code></td><td>the room's name for people</td></tr>
+  <tr><td><code>lead_session</code></td><td>the Claude Code session id of the lead; events go to it</td></tr>
+  <tr><td><code>sessions</code></td><td>earlier or extra lead sessions</td></tr>
+  <tr><td><code>repos</code>, <code>code</code></td><td>product repos, and the integration branch and its worktree</td></tr>
+  <tr><td><code>paused</code></td><td>a time when you paused it; empty when running</td></tr>
+  <tr><td><code>closed</code></td><td>a time and one-line outcome; set by <code>rooms close</code></td></tr>
+</table>
+<p>Sections: Goal, Premises, Scope, Team (one charter per member), Where things are.</p>
+
+<h3>now-head.md</h3>
+<p><code>phase</code> (one line on where the room is), <code>since</code> (your last message), <code>waiting</code> and <code>resume</code> (an outside wait: who or what, and when it picks up again). The body is a short note to you.</p>
+
+<h3>Items</h3>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>state</code></td><td>todo, doing, blocked, review, done or dropped</td></tr>
+  <tr><td><code>owner</code>, <code>tier</code></td><td>the role, and the model tier it runs on</td></tr>
+  <tr><td><code>depends_on</code>, <code>locks</code></td><td>items that must be done first; shared resources it holds</td></tr>
+  <tr><td><code>kind: research</code></td><td>may run before the PRD is agreed (4 hours at most, three open at a time)</td></tr>
+  <tr><td><code>cap_h</code></td><td>the time cap in hours; status flags 1× and 1.5× overruns</td></tr>
+  <tr><td><code>agent</code></td><td>the worker's session id, set by <code>rooms spawn</code></td></tr>
+</table>
+<p>Sections: Acceptance (<code>- [ ]</code> lines), Inputs, Log, Result (<code>Done:</code>, <code>Artifacts:</code>, <code>Unverified:</code>, <code>Next:</code>), and Needs when a worker is blocked.</p>
+
+<h3>Decisions</h3>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>type</code></td><td>decision, premise, ask, todo, prd or refinement</td></tr>
+  <tr><td><code>door</code></td><td>one (hard to undo) or two (reversible)</td></tr>
+  <tr><td><code>decider</code></td><td><code>human</code> for you, or a team role</td></tr>
+  <tr><td><code>status</code></td><td>open, provisional (going ahead by default), final or superseded</td></tr>
+  <tr><td><code>default</code>, <code>due</code></td><td>the option that applies, and when, if nobody stops it</td></tr>
+  <tr><td><code>pick</code>, <code>pick_reason</code></td><td>the team's recommendation</td></tr>
+  <tr><td><code>blocks</code>, <code>urgent</code></td><td>items it holds up (sets its place on the page); a live risk</td></tr>
+</table>
+<p>Sections: Options (<code>a) …</code> lines), Steps (tasks), Why it matters, Questions, Answer.</p>
+
+<h3>PRD and refinements</h3>
+<p>The PRD's <code>status</code> is draft, review or agreed; building is locked until it is agreed. An agreed PRD is never edited: a change is a refinement (<code>status</code> draft, review, agreed or superseded; <code>touches</code> lists the requirement ids it changes). The binding set is the PRD plus its agreed refinements, in order; <code>rooms brief &lt;room&gt;</code> prints it.</p>
+
+<h2 id="commands">Commands</h2>
+
+<table>
+  <tr><th>Command</th><th>Does</th></tr>
+  <tr><td><code>rooms new &lt;room&gt; "Title" [--feature]</code></td><td>a room; <code>--feature</code> adds a PRD and locks building</td></tr>
+  <tr><td><code>rooms add &lt;room&gt; "title" --acc … --in … [--dep T01] [--cap 2] [--tier standard] [--research]</code></td><td>a work item</td></tr>
+  <tr><td><code>rooms ask &lt;room&gt; "Question?" -o … -o … [--door one | --default b] [--premise | --todo --steps … | --text]</code></td><td>a card, routed by kind</td></tr>
+  <tr><td><code>rooms spawn &lt;room&gt; T03 [--repo path] [--tier light]</code></td><td>start a worker on an item</td></tr>
+  <tr><td><code>rooms spawn &lt;room&gt; --lead</code></td><td>start a background lead session</td></tr>
+  <tr><td><code>rooms log | need | done &lt;room&gt; T03 …</code></td><td>a worker's log line, a blocking need, or finishing</td></tr>
+  <tr><td><code>rooms answer &lt;room&gt; D05 b [--quote …] | --reply "…"</code></td><td>record your answer from chat, or reply to your question</td></tr>
+  <tr><td><code>rooms prd &lt;room&gt; review</code>, <code>rooms rf &lt;room&gt; new | RFnn review</code></td><td>the PRD gate and refinements</td></tr>
+  <tr><td><code>rooms status [room] [--yield]</code></td><td>the room's state; <code>--yield</code> exits 1 if stopping now would leave it stuck</td></tr>
+  <tr><td><code>rooms tell &lt;room&gt; "…" [--item T03]</code></td><td>message the lead, or a worker</td></tr>
+  <tr><td><code>rooms chat &lt;room&gt;</code></td><td>open the room's lead in this terminal</td></tr>
+  <tr><td><code>rooms pause | resume | close &lt;room&gt;</code></td><td>stop new work, restart it, or finish the room</td></tr>
+  <tr><td><code>rooms serve</code>, <code>rooms sweep</code></td><td>the page server; one sweep by hand</td></tr>
+</table>
+
+<p><code>rooms help</code> lists every flag. Set <code>ROOMS_AS=&lt;name&gt;</code> so log lines carry it.</p>
+
+<h2 id="config">Configuration</h2>
+
+<p><code>~/.config/claude-rooms/config.json</code>, all optional:</p>
+
+<pre><code>{
+  "tiers": {
+    "light":    { "model": "claude-haiku-5-5",  "effort": "medium" },
+    "standard": { "model": "claude-sonnet-5-5", "effort": "medium" },
+    "review":   { "model": "claude-opus-5-5",   "effort": "high" }
+  },
+  "worker": { "permissionMode": "auto", "tier": "standard" },
+  "lead":   { "permissionMode": "auto", "allowedTools": ["Bash(rooms *)", "Read", "Edit", "Write"] },
+  "provisionalMinutes": 60,
+  "commitDebounceMs": 60000
+}</code></pre>
+
+<ul>
+  <li><strong>Tiers</strong>: light for mechanical work, standard for ordinary implementation, review for judging someone else's work. Deeper models only when you ask for them: pass <code>--model</code> to <code>rooms spawn</code>.</li>
+  <li><strong>Permission modes</strong>: workers and one-shot leads run unattended, so a mode that asks for permission leaves them waiting with nobody to answer. Keep a mode that doesn't prompt, and narrow the lead's <code>allowedTools</code> if you want it to touch less.</li>
+  <li><strong>provisionalMinutes</strong>: how long a reversible call waits before it goes ahead (30 at least).</li>
+</ul>
+
+<table>
+  <tr><th>Variable</th><th>Default</th><th>Sets</th></tr>
+  <tr><td><code>CLAUDE_ROOMS_HOME</code></td><td><code>~/rooms</code></td><td>where records live</td></tr>
+  <tr><td><code>CLAUDE_ROOMS_STATE</code></td><td><code>~/.local/state/claude-rooms</code></td><td>inboxes, leases, receipts</td></tr>
+  <tr><td><code>ROOMS_USERS</code></td><td>unset</td><td>Tailscale logins allowed to answer on the page</td></tr>
+  <tr><td><code>ROOMS_AS</code></td><td>unset</td><td>the name your log lines carry</td></tr>
+</table>
+
+<h2 id="trouble">Troubleshooting</h2>
+
+<p>Every room has one status: needs you, stuck, moving, waiting outside, paused, idle or done. <code>rooms status &lt;room&gt;</code> gives the reason and, under “For the lead”, what to fix.</p>
+
+<table>
+  <tr><th>You see</th><th>It means</th><th>Do</th></tr>
+  <tr><td>Stuck: items are ready but nobody is working on them</td><td>the lead ended its turn without starting work</td><td>tap Wake the lead on the page, or <code>rooms tell &lt;room&gt; "dispatch the ready items"</code></td></tr>
+  <tr><td>Stuck: Tnn finished without reporting back</td><td>a worker's turn ended with its item still doing</td><td>the lead has been told; if nothing happens, read the item's Log and <code>rooms tell &lt;room&gt; "…" --item Tnn</code></td></tr>
+  <tr><td>Stuck: updates for the lead can't reach it</td><td>the lead session is open without the plugin</td><td>install the plugin (above) and <code>/reload-plugins</code> in that session</td></tr>
+  <tr><td>Tnn doing, but its worker is idle</td><td>the worker stopped, often on a permission prompt</td><td><code>claude attach &lt;id&gt;</code> to see it; set a permission mode that doesn't prompt</td></tr>
+  <tr><td><code>rooms spawn --lead</code> fails with “workspace not trusted”</td><td>background sessions need the folder trusted once</td><td>run <code>claude</code> in <code>~/rooms</code> once and accept the prompt</td></tr>
+  <tr><td>A command refuses: “the PRD is draft”</td><td>building is locked until you agree the PRD</td><td>only research items run before; the lead asks with <code>rooms prd &lt;room&gt; review</code></td></tr>
+  <tr><td>Mirror push failing</td><td>the background push to your remote errored</td><td>check credentials on the host; records are safe in the local repo</td></tr>
+  <tr><td>Nothing on the page updates</td><td><code>rooms serve</code> isn't running</td><td><code>systemctl --user status claude-rooms</code></td></tr>
+</table>
+
+<p><a href="https://github.com/mvexel/claude-rooms">Source</a> · public domain (Unlicense)</p>
+
+</body>
+</html>
