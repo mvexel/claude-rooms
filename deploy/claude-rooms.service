@@ -1,0 +1,13 @@
+[Unit]
+Description=claude-rooms page server and sweep
+After=network-online.target
+
+[Service]
+# Tailscale logins allowed to answer cards (required to listen beyond loopback).
+Environment=ROOMS_USERS=
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/rooms serve --port 8787 --host 127.0.0.1
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

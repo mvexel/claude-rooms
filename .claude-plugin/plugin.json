@@ -1,0 +1,9 @@
+{
+  "name": "rooms",
+  "version": "0.1.0",
+  "description": "Rooms for Claude Code agent teams: a lead, workers, decision cards on a phone page, and a record in plain markdown.",
+  "author": {
+    "name": "claude-rooms contributors"
+  },
+  "license": "Unlicense"
+}

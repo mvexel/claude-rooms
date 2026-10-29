@@ -1,0 +1,13 @@
+{
+  "name": "mvexel-rooms",
+  "description": "claude-rooms: agent team rooms for Claude Code",
+  "owner": {
+    "name": "claude-rooms contributors"
+  },
+  "plugins": [
+    {
+      "name": "rooms",
+      "source": "./"
+    }
+  ]
+}

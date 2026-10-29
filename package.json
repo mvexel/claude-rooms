@@ -1,0 +1,9 @@
+{
+  "name": "claude-rooms",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --no-warnings --test 'tests/*.test.ts'"
+  }
+}

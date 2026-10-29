@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>claude-rooms</title>
+<style>
+:root {
+  --bg:#f6f5f2; --surface:#ffffff; --sunk:#efeee9; --ink:#141413; --ink-2:#55534e; --line:#e2e0da;
+  --accent:#1d5fb0; --accent-ink:#ffffff; --accent-soft:#e7effa;
+  --signal:#a8321a; --signal-soft:#fbe9e2; --critical:#b3261e; --critical-soft:#fbe7e5;
+  --ok:#1e7a3a; --ok-soft:#e5f3e9; --warn-stripe:#e0a100;
+  --r-card:12px; --r-btn:10px; --tab-h:58px;
+  --shadow:0 1px 2px rgba(0,0,0,.06),0 2px 8px rgba(0,0,0,.04);
+  font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+:root[data-theme="dark"] { color-scheme:dark;
+  --bg:#111110; --surface:#1b1b1a; --sunk:#232321; --ink:#f2f1ec; --ink-2:#b9b7ae; --line:#2e2d2a;
+  --accent:#7fb2f5; --accent-ink:#111110; --accent-soft:#1c2a3d;
+  --signal:#ff9b7e; --signal-soft:#3a1f17; --critical:#ff8a80; --critical-soft:#3b1d1b;
+  --ok:#6fcf8b; --ok-soft:#173222; --shadow:none; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme:dark;
+  --bg:#111110; --surface:#1b1b1a; --sunk:#232321; --ink:#f2f1ec; --ink-2:#b9b7ae; --line:#2e2d2a;
+  --accent:#7fb2f5; --accent-ink:#111110; --accent-soft:#1c2a3d;
+  --signal:#ff9b7e; --signal-soft:#3a1f17; --critical:#ff8a80; --critical-soft:#3b1d1b;
+  --ok:#6fcf8b; --ok-soft:#173222; --shadow:none; } }
+* { box-sizing:border-box; }
+html,body { margin:0; background:var(--bg); color:var(--ink); }
+body { padding-bottom:calc(var(--tab-h) + env(safe-area-inset-bottom) + 16px); -webkit-tap-highlight-color:transparent; }
+button { font:inherit; color:inherit; cursor:pointer; }
+main { max-width:560px; margin:0 auto; padding:calc(env(safe-area-inset-top) + 12px) 14px 0; }
+h1 { font-size:28px; line-height:1.15; margin:8px 0 2px; letter-spacing:-.01em; }
+h1 .count { color:var(--signal); }
+.pulse { display:flex; flex-wrap:wrap; gap:4px 12px; margin:2px 0 14px; padding:0; border:0; background:none; font-size:14px; color:var(--ink-2); text-align:left; min-height:44px; align-items:center; }
+.pulse b { color:var(--ink); font-weight:600; }
+.sec { font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-2); margin:22px 2px 8px; display:flex; justify-content:space-between; }
+.empty { padding:28px 8px; text-align:center; color:var(--ink-2); }
+.empty b { display:block; font-size:20px; color:var(--ink); margin-bottom:6px; }
+.offline { position:sticky; top:0; z-index:5; background:var(--sunk); border-bottom:1px solid var(--line); padding:8px 14px; font-size:14px; text-align:center; }
+
+/* cards */
+.card { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-card); padding:12px 14px 6px; margin:0 0 12px; box-shadow:var(--shadow); position:relative; }
+.card.urgent { border-color:var(--critical); }
+.meta { display:flex; align-items:center; gap:6px; font-size:12px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-2); min-height:20px; }
+.meta .room { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.meta .sp { flex:1; }
+.pill { display:inline-flex; align-items:center; gap:4px; border-radius:999px; padding:1px 8px; font-size:12px; font-weight:600; letter-spacing:0; text-transform:none; border:1px solid var(--line); color:var(--ink-2); white-space:nowrap; }
+.pill.old { border-color:var(--signal); color:var(--signal); }
+.pill.urgent { background:var(--critical-soft); border-color:var(--critical); color:var(--critical); }
+.pill.reply { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+.q { font-size:18px; font-weight:600; line-height:1.3; margin:6px 0 4px; }
+.cons { font-size:14px; color:var(--ink-2); margin:0 0 10px; }
+.paused-note { font-size:14px; background:var(--sunk); border-radius:8px; padding:8px 10px; margin:0 0 10px; display:flex; gap:8px; align-items:flex-start; }
+.paused-note label { display:flex; gap:6px; align-items:center; margin-top:4px; min-height:32px; }
+.opts { display:grid; gap:8px; }
+.opt { display:flex; gap:10px; align-items:flex-start; width:100%; min-height:56px; padding:10px 12px; text-align:left; background:var(--surface); border:1.5px solid var(--line); border-radius:var(--r-btn); transition:background .15s, border-color .15s; }
+.opt:active { background:var(--sunk); }
+.opt .k { flex:none; width:26px; height:26px; border-radius:50%; display:grid; place-items:center; background:var(--sunk); font-weight:700; font-size:14px; margin-top:1px; }
+.opt .l { flex:1; min-width:0; }
+.opt .l b { display:block; font-weight:600; }
+.opt .l small { display:block; color:var(--ink-2); font-size:14px; margin-top:2px; }
+.opt .tag { flex:none; font-size:12px; font-weight:600; color:var(--ok); border:1px solid var(--ok); border-radius:999px; padding:1px 8px; margin-top:3px; }
+.opt.pick { border-color:var(--ok); }
+.opt.sel { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+.opt.sel .k { background:rgba(0,0,0,.18); }
+.opt.sel small { color:inherit; opacity:.85; }
+.why1 { font-size:14px; color:var(--ink-2); margin:8px 2px 0; }
+.why1 b { color:var(--ok); font-weight:600; }
+.foot { display:flex; gap:2px; margin:6px -8px 0; border-top:1px solid var(--line); padding-top:2px; }
+.foot button { background:none; border:0; min-height:44px; padding:0 10px; font-size:15px; color:var(--accent); font-weight:500; }
+.foot .sp { flex:1; }
+.foot .lock { display:inline-flex; align-items:center; gap:4px; font-size:13px; color:var(--ink-2); padding:0 8px; }
+textarea, input[type=text] { width:100%; font:inherit; font-size:16px; color:var(--ink); background:var(--bg); border:1.5px solid var(--line); border-radius:var(--r-btn); padding:10px 12px; }
+textarea:focus, input:focus, button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.notebox { margin:10px 0 2px; }
+.notebox small { display:block; font-size:12px; color:var(--ink-2); margin:4px 2px; }
+.primary { display:block; width:100%; min-height:52px; border:0; border-radius:var(--r-btn); background:var(--accent); color:var(--accent-ink); font-weight:600; font-size:16px; }
+.secondary { display:block; width:100%; min-height:48px; border:1.5px solid var(--line); border-radius:var(--r-btn); background:var(--surface); font-weight:600; }
+.row2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 8px; }
+.chip { min-height:36px; padding:0 12px; border-radius:999px; border:1px solid var(--line); background:var(--sunk); font-size:14px; }
+.steps { list-style:none; margin:0 0 10px; padding:0; counter-reset:s; }
+.steps li { display:flex; gap:10px; align-items:flex-start; padding:8px 0; border-top:1px solid var(--line); counter-increment:s; }
+.steps li:first-child { border-top:0; }
+.steps input[type=checkbox] { width:22px; height:22px; margin:1px 0 0; flex:none; accent-color:var(--ok); }
+.steps .t { flex:1; min-width:0; font-size:15px; }
+.steps .t::before { content:counter(s) ". "; color:var(--ink-2); }
+.steps li.done .t { color:var(--ink-2); text-decoration:line-through; }
+.steps code { font:13px ui-monospace,Menlo,monospace; background:var(--sunk); padding:1px 4px; border-radius:4px; overflow-wrap:anywhere; }
+.copy { flex:none; min-height:36px; min-width:56px; border:1px solid var(--line); background:var(--surface); border-radius:8px; font-size:13px; font-weight:600; color:var(--accent); }
+.thread { margin:8px 0 10px; display:grid; gap:6px; }
+.bub { font-size:14px; padding:8px 10px; border-radius:10px; background:var(--sunk); max-width:90%; }
+.bub.me { justify-self:end; background:var(--accent-soft); }
+.bub small { display:block; font-size:12px; color:var(--ink-2); margin-bottom:2px; }
+.countdown { font-size:14px; font-weight:600; color:var(--signal); }
+
+/* receipt */
+.receipt { background:var(--surface); border:1.5px solid var(--ok); border-radius:var(--r-card); padding:12px 14px; margin:0 0 12px; position:relative; overflow:hidden; }
+.receipt .r1 { display:flex; gap:10px; align-items:center; }
+.receipt .r1 .tx { flex:1; min-width:0; }
+.receipt .r1 b { display:block; }
+.receipt .r1 small { color:var(--ink-2); font-size:14px; }
+.receipt .undo { flex:none; min-height:44px; padding:0 16px; border-radius:var(--r-btn); border:1.5px solid var(--accent); background:none; color:var(--accent); font-weight:700; }
+.receipt .drain { position:absolute; left:0; bottom:0; height:3px; background:var(--accent); width:100%; transform-origin:left; }
+.receipt.fail { border-color:var(--critical); }
+.tick { color:var(--ok); font-weight:700; }
+
+/* alarm */
+.alarm { background:var(--critical-soft); border:1.5px solid var(--critical); border-radius:var(--r-card); padding:12px 14px; margin:0 0 12px; }
+.alarm .h { display:flex; gap:8px; align-items:center; font-weight:700; color:var(--critical); }
+.alarm p { margin:4px 0 10px; }
+.alarm .acts { display:flex; gap:8px; }
+.alarm .acts button { min-height:44px; padding:0 16px; border-radius:var(--r-btn); font-weight:600; }
+.alarm .go { background:var(--critical); color:#fff; border:0; }
+:root[data-theme="dark"] .alarm .go { color:#111; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .alarm .go { color:#111; } }
+.alarm .ghost { background:none; border:1.5px solid var(--line); }
+.alarm.okay { background:var(--ok-soft); border-color:var(--ok); }
+.alarm.okay .h { color:var(--ok); }
+
+.group { display:flex; align-items:center; gap:10px; width:100%; min-height:52px; background:var(--surface); border:1px dashed var(--line); border-radius:var(--r-card); padding:8px 14px; margin:0 0 12px; text-align:left; }
+.group .gtx { flex:1; }
+.group small { color:var(--ink-2); }
+
+/* rooms list */
+.rlist { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-card); overflow:hidden; }
+.rrow { display:flex; gap:12px; align-items:flex-start; width:100%; padding:12px 14px; min-height:64px; border:0; border-top:1px solid var(--line); background:none; text-align:left; }
+.rrow:first-child { border-top:0; }
+.rrow .tx { flex:1; min-width:0; }
+.rrow .tx b { display:block; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rrow .tx small { display:block; color:var(--ink-2); font-size:14px; }
+.rrow .tx small.when { font-size:12px; margin-top:2px; }
+.badge { flex:none; min-width:24px; height:24px; padding:0 7px; border-radius:12px; background:var(--signal); color:#fff; font-size:13px; font-weight:700; display:grid; place-items:center; margin-top:2px; }
+:root[data-theme="dark"] .badge { color:#111; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .badge { color:#111; } }
+.chev { color:var(--ink-2); margin-top:2px; }
+
+/* status glyph */
+.st { flex:none; display:inline-grid; place-items:center; width:22px; height:22px; border-radius:50%; font-size:12px; font-weight:800; margin-top:1px; }
+.st-needs_you { background:var(--signal-soft); color:var(--signal); }
+.st-stuck { background:var(--critical-soft); color:var(--critical); }
+.st-moving { background:var(--accent-soft); color:var(--accent); }
+.st-waiting_outside, .st-paused, .st-idle { background:var(--sunk); color:var(--ink-2); }
+.st-done { background:var(--ok-soft); color:var(--ok); }
+
+/* room screen */
+.back { background:none; border:0; color:var(--accent); min-height:44px; padding:0; font-size:16px; }
+.hero { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-card); padding:14px; margin:6px 0 12px; }
+.hero.stuck { border-color:var(--critical); background:var(--critical-soft); }
+.hero .sline { display:flex; gap:10px; align-items:flex-start; font-size:17px; font-weight:600; }
+.hero .who { font-size:14px; color:var(--ink-2); margin:6px 0 0 32px; }
+.hero .primary { margin-top:12px; }
+.phase { color:var(--ink-2); margin:0 2px 4px; }
+.items { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-card); overflow:hidden; }
+.it { display:flex; gap:10px; align-items:baseline; padding:10px 14px; min-height:48px; border-top:1px solid var(--line); width:100%; background:none; border-left:0; border-right:0; border-bottom:0; text-align:left; font-size:15px; }
+.it:first-child { border-top:0; }
+.it .id { flex:none; font:600 12px ui-monospace,Menlo,monospace; color:var(--ink-2); width:34px; }
+.it .tt { flex:1; min-width:0; }
+.it .tt small { display:block; font-size:13px; color:var(--ink-2); }
+.it .star { color:var(--signal); font-weight:700; }
+.note { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-card); padding:12px 14px; font-size:15px; }
+.note small { color:var(--ink-2); }
+
+/* more */
+.seg { display:inline-grid; grid-auto-flow:column; background:var(--sunk); border-radius:10px; padding:3px; gap:2px; }
+.seg button { border:0; background:none; min-height:38px; padding:0 12px; border-radius:8px; font-size:14px; color:var(--ink-2); }
+.seg button[aria-pressed="true"] { background:var(--surface); color:var(--ink); font-weight:600; box-shadow:var(--shadow); }
+.setrow { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 14px; min-height:56px; border-top:1px solid var(--line); }
+.setrow:first-child { border-top:0; }
+.small { font-size:13px; color:var(--ink-2); }
+
+/* tab bar */
+nav.tabs { position:fixed; left:0; right:0; bottom:0; z-index:10; background:var(--surface); border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom); }
+nav.tabs .in { max-width:560px; margin:0 auto; display:grid; grid-template-columns:repeat(3,1fr); }
+nav.tabs a { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; height:var(--tab-h); color:var(--ink-2); text-decoration:none; font-size:12px; font-weight:600; gap:2px; }
+nav.tabs a[aria-current="page"] { color:var(--accent); }
+nav.tabs svg { width:24px; height:24px; }
+nav.tabs .badge { position:absolute; top:5px; left:calc(50% + 6px); height:20px; min-width:20px; font-size:12px; margin:0; }
+
+/* sheets */
+dialog { border:0; padding:0; width:100%; max-width:560px; max-height:88vh; margin:auto auto 0; border-radius:16px 16px 0 0; background:var(--surface); color:var(--ink); }
+dialog::backdrop { background:rgba(0,0,0,.4); }
+.sh { padding:8px 16px calc(20px + env(safe-area-inset-bottom)); }
+.grab { width:40px; height:5px; border-radius:3px; background:var(--line); margin:4px auto 8px; }
+.sh .top { display:flex; gap:10px; align-items:flex-start; }
+.sh .top h2 { flex:1; font-size:19px; margin:0; line-height:1.3; }
+.x { flex:none; width:44px; height:44px; border-radius:50%; border:0; background:var(--sunk); font-size:20px; }
+.sh h3 { font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-2); margin:18px 0 6px; }
+.sh p { margin:0 0 8px; }
+.sh code { font:13px ui-monospace,Menlo,monospace; background:var(--sunk); padding:1px 4px; border-radius:4px; }
+.toast { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(var(--tab-h) + env(safe-area-inset-bottom) + 12px); z-index:20; background:var(--ink); color:var(--bg); border-radius:12px; padding:12px 16px; font-size:15px; max-width:calc(100vw - 28px); box-shadow:0 4px 16px rgba(0,0,0,.25); }
+.toast[hidden] { display:none; }
+@media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+.sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+.changed { font-size:14px; background:var(--accent-soft); border:1px solid var(--accent); border-radius:8px; padding:8px 10px; margin:0 0 10px; width:100%; text-align:left; }
+.skel { height:140px; border-radius:var(--r-card); background:var(--sunk); margin:0 0 12px; }
+.sec-body { white-space:pre-wrap; overflow-wrap:anywhere; font-size:15px; margin:0 0 8px; }
+.err { color:var(--critical); font-size:14px; margin:6px 0 0; }
+</style>
+</head>
+<body>
+<div id="offline" class="offline" role="status" hidden></div>
+<main id="app"></main>
+<nav class="tabs" aria-label="Main"><div class="in" id="tabs"></div></nav>
+<dialog id="sheet" aria-label="Details"></dialog>
+<div id="toast" class="toast" role="status" hidden></div>
+<script>
+"use strict";
+// claude-rooms owner page. One inbox across rooms; answers are optimistic
+// with a local undo window, then POSTed; receipts follow delivery to the lead.
+// API shapes: docs in the redesign spec, section 8.
+
+const BASE = location.pathname.replace(/[^/]*$/, "");
+const api = p => BASE + "api/" + p;
+const POLL_MS = 20000;
+
+const S = { inbox: null, rooms: null, roomsHome: "", detail: {}, loadedAt: null, offline: false, error: "" };
+const ui = {
+  openGroups: new Set(), notes: load("notes", {}), noteOpen: new Set(), pending: {}, receipts: {},
+  todo: {}, resumeToo: {}, changed: {}, waiting: [], dismissed: new Set(load("dismissed", [])), wakeState: {},
+};
+const etags = {}, cache = {};
+
+// ---------------------------------------------------------------- helpers
+const $ = s => document.querySelector(s);
+function h(tag, a = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(a)) {
+    if (v == null || v === false) continue;
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) n.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return n;
+}
+function load(k, d) { try { return JSON.parse(localStorage.getItem("rooms:" + k)) ?? d; } catch { return d; } }
+function save(k, v) { try { localStorage.setItem("rooms:" + k, JSON.stringify(v)); } catch {} }
+const ago = m => m == null ? "" : m < 1 ? "just now" : m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.round(m / 1440)}d`;
+const minsUntil = iso => Math.round((Date.parse(iso) - Date.now()) / 60000);
+const dur = m => m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+const hhmm = (d = new Date()) => d.toTimeString().slice(0, 5);
+const key = c => c.room + "/" + c.id;
+const GLYPH = { needs_you: "●", stuck: "▲", moving: "●", waiting_outside: "◐", paused: "‖", idle: "○", done: "✓" };
+const WORD = { needs_you: "Needs you", stuck: "Stuck", moving: "Moving", waiting_outside: "Waiting on something outside", paused: "Paused", idle: "Idle", done: "Done" };
+const glyph = s => h("span", { class: "st st-" + (s || "idle"), "aria-hidden": "true" }, GLYPH[s] || "○");
+function toast(t, ms = 2600) { const n = $("#toast"); n.textContent = t; n.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => n.hidden = true, ms); }
+const vib = () => navigator.vibrate && navigator.vibrate(10);
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+const roomOf = name => (S.rooms || []).find(r => r.name === name) || { name, title: name, status: "idle" };
+const leadName = r => { const n = S.detail[r.name]?.lead?.name; return n && n !== "lead" ? n : "the lead"; };
+const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
+const cards = () => (S.inbox?.cards || []).filter(c => !ui.receipts[key(c)]?.gone && !ui.waiting.some(w => key(w) === key(c)));
+const goingAhead = () => (S.inbox?.going_ahead || []).filter(c => !ui.dismissed.has(key(c) + "@" + c.due_at) && !ui.receipts["ga:" + key(c)]?.gone);
+const needCount = () => cards().length + goingAhead().length;
+
+// ---------------------------------------------------------------- network
+async function getJSON(path) {
+  const headers = etags[path] ? { "If-None-Match": etags[path] } : {};
+  const r = await fetch(api(path), { headers, cache: "no-cache" });
+  if (r.status === 304) return cache[path];
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+  const etag = r.headers.get("ETag"); if (etag) etags[path] = etag;
+  return (cache[path] = await r.json());
+}
+async function postJSON(path, body) {
+  const r = await fetch(api(path), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const out = await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+  return { status: r.status, ...out };
+}
+async function refresh() {
+  try {
+    const [inbox, rooms] = await Promise.all([getJSON("inbox"), getJSON("rooms")]);
+    S.inbox = inbox;
+    S.rooms = Array.isArray(rooms) ? rooms : rooms.rooms || [];
+    S.roomsHome = Array.isArray(rooms) ? "" : rooms.rooms_home || "";
+    const [a, b] = routes();
+    if (a === "room" && b) S.detail[b] = await getJSON("rooms/" + encodeURIComponent(b));
+    // returned waiting-on-team cards come back when the server lists them again with a reply
+    ui.waiting = ui.waiting.filter(w => !(S.inbox.cards || []).some(c => key(c) === key(w) && c.reply_unread));
+    S.loadedAt = new Date(); S.offline = false; S.error = "";
+  } catch (e) {
+    S.offline = true; S.error = e.message;
+  }
+  safeRender();
+}
+let poller;
+function startPolling() { clearInterval(poller); poller = setInterval(() => document.visibilityState === "visible" && refresh(), POLL_MS); }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });
+addEventListener("online", refresh);
+
+// Don't redraw under the finger: while typing in the page, defer.
+let dirty = false;
+function safeRender() {
+  const a = document.activeElement;
+  if (a && $("#app").contains(a) && /^(TEXTAREA|INPUT)$/.test(a.tagName)) { dirty = true; return; }
+  render();
+}
+document.addEventListener("focusout", () => setTimeout(() => { if (dirty) { dirty = false; safeRender(); } }, 0));
+
+// ---------------------------------------------------------------- router
+const routes = () => (location.hash.slice(1) || "/").split("/").filter(Boolean).map(decodeURIComponent);
+addEventListener("hashchange", async () => {
+  const [a, b, c] = routes();
+  if (a === "room" && b && !S.detail[b]) { render(); try { S.detail[b] = await getJSON("rooms/" + encodeURIComponent(b)); } catch (e) { toast("Couldn't load the room: " + e.message); } }
+  render(); scrollTo(0, 0);
+  if (a === "card" && b && c) openRecord(b, c);
+});
+function render() {
+  const [a, b] = routes(), app = $("#app");
+  const off = $("#offline");
+  off.hidden = !S.offline;
+  if (S.offline) off.textContent = S.loadedAt ? `Offline. Showing ${hhmm(S.loadedAt)} data. Retrying.` : `Can't reach the rooms server (${S.error}). Retrying.`;
+  app.replaceChildren(a === "rooms" ? roomsView() : a === "room" ? roomView(b) : a === "more" ? moreView() : inboxView());
+  tabs(a === "rooms" || a === "room" ? "rooms" : a === "more" ? "more" : "inbox");
+  const n = needCount();
+  document.title = (n ? `(${n}) ` : "") + "claude-rooms";
+  favicon(n);
+}
+function favicon(n) {
+  let l = $("link[rel=icon]"); if (!l) { l = h("link", { rel: "icon" }); document.head.append(l); }
+  const dot = n ? `<circle cx='24' cy='8' r='7' fill='%23a8321a'/>` : "";
+  l.href = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='3' y='6' width='22' height='20' rx='4' fill='none' stroke='%231d5fb0' stroke-width='3'/>${dot}</svg>`;
+}
+function tabs(on) {
+  const ic = { inbox: "M4 4h16v10h-5l-1.5 3h-3L9 14H4z", rooms: "M4 5h7v6H4zM13 5h7v6h-7zM4 13h7v6H4zM13 13h7v6h-7z", more: "M5 12h.01M12 12h.01M19 12h.01" };
+  const t = [["inbox", "#/", "Needs you"], ["rooms", "#/rooms", "Rooms"], ["more", "#/more", "More"]];
+  $("#tabs").replaceChildren(...t.map(([k, href, label]) => {
+    const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("aria-hidden", "true");
+    s.innerHTML = `<path d="${ic[k]}" fill="none" stroke="currentColor" stroke-width="${k === "more" ? 3.2 : 1.8}" stroke-linecap="round" stroke-linejoin="round"/>`;
+    const n = k === "inbox" ? needCount() : 0;
+    return h("a", { href, "aria-current": on === k ? "page" : null }, s, label, n ? h("span", { class: "badge", "aria-label": `${n} need you` }, n) : null);
+  }));
+}
+
+// ---------------------------------------------------------------- inbox
+function pulse() {
+  const p = S.inbox?.pulse || {};
+  const bits = [["stuck", "stuck"], ["needs_you", "need you"], ["moving", "moving"], ["waiting_outside", "waiting outside"], ["paused", "paused"]]
+    .filter(([s]) => p[s]).map(([s, w]) => h("span", {}, h("b", {}, p[s]), " " + w));
+  return h("button", { class: "pulse", onclick: () => location.hash = "#/rooms", "aria-label": "Room status, open Rooms" }, bits.length ? bits : h("span", {}, "No live rooms"));
+}
+function inboxView() {
+  const f = document.createDocumentFragment();
+  if (!S.inbox) { f.append(h("h1", {}, "Needs you"), h("div", { class: "skel" }), h("div", { class: "skel" })); return f; }
+  const list = cards(), n = needCount();
+  f.append(h("h1", {}, "Needs you ", n ? h("span", { class: "count" }, n) : null), pulse());
+  for (const a of S.inbox.alarms || []) f.append(alarmCard(a));
+  const blocking = list.filter(c => c.urgent || c.blocking_score > 0), later = list.filter(c => !(c.urgent || c.blocking_score > 0));
+  f.append(...grouped(blocking));
+  const ga = goingAhead();
+  if (!list.length && !ga.length) {
+    const stuck = (S.rooms || []).find(r => r.status === "stuck");
+    const p = S.inbox.pulse || {};
+    const why = [p.moving && `${p.moving} room${p.moving > 1 ? "s" : ""} moving`, p.waiting_outside && `${p.waiting_outside} waiting on something outside`, p.paused && `${p.paused} paused`].filter(Boolean).join(", ");
+    f.append(h("div", { class: "empty", role: "status" }, h("b", {}, stuck ? "No cards for you" : "Nothing needs you"),
+      stuck ? `But ${stuck.title} is stuck: see above.` : why ? `Quiet because ${why}.` : (S.rooms || []).length ? "Every room is idle or done." : "No rooms yet. A room is a project with its own team of agents and a lead that runs it."));
+  }
+  if (ga.length) {
+    f.append(h("div", { class: "sec" }, h("span", {}, "Going ahead unless you stop it"), h("span", {}, ga.length)));
+    ga.forEach(c => f.append(goingAheadCard(c)));
+  }
+  if (later.length) {
+    const open = ui.openGroups.has("later");
+    f.append(h("div", { class: "sec" }, h("span", {}, "Not blocking anything yet"), h("span", {}, later.length)));
+    if (open || later.length <= 2) later.forEach(c => f.append(cardOrReceipt(c)));
+    else f.append(h("button", { class: "group", onclick: () => { ui.openGroups.add("later"); render(); } }, h("span", { class: "gtx" }, `${later.length} cards`, h("br"), h("small", {}, "Nothing waits on these yet")), h("span", { class: "chev" }, "›")));
+  }
+  const waiting = [...(S.inbox.waiting_on_team || []).filter(w => !ui.waiting.some(x => key(x) === key(w))), ...ui.waiting];
+  if (waiting.length) {
+    f.append(h("div", { class: "sec" }, h("span", {}, "Waiting on the team"), h("span", {}, waiting.length)));
+    waiting.forEach(w => f.append(h("div", { class: "card" }, h("div", { class: "meta" }, h("span", { class: "room" }, roomOf(w.room).title), h("span", { class: "sp" }), h("span", { class: "pill" }, "asked " + (w.asked_at || "").slice(11, 16))),
+      h("p", { class: "q", style: "font-size:16px" }, w.title), h("p", { class: "cons" }, `You asked ${w.who || "the lead"}${w.text ? `: “${w.text}”` : ""}. The card comes back here with the reply.`))));
+  }
+  return f;
+}
+// Three or more cards in a row from one room collapse after two.
+function grouped(list) {
+  const out = [], seen = {};
+  for (const c of list) {
+    const total = list.filter(x => x.room === c.room).length, n = (seen[c.room] = (seen[c.room] || 0) + 1);
+    const fold = total > 3 && !ui.openGroups.has(c.room);
+    if (fold && n === 3) out.push(h("button", { class: "group", onclick: () => { ui.openGroups.add(c.room); render(); } },
+      glyph(c.room_status), h("span", { class: "gtx" }, `${total - 2} more from `, h("b", {}, c.room_title || c.room), h("br"), h("small", {}, "most blocking first")), h("span", { class: "chev" }, "›")));
+    if (fold && n >= 3) continue;
+    out.push(cardOrReceipt(c));
+  }
+  return out;
+}
+function alarmCard(a) {
+  const st = ui.wakeState[a.room];
+  const act = a.action;
+  return h("section", { class: "alarm", "aria-label": a.kind === "stuck" ? "Stuck room" : "Attention" },
+    h("div", { class: "h" }, h("span", { "aria-hidden": "true" }, "▲"), a.kind === "stuck" ? `${a.room_title || a.room} is stuck` : a.kind === "delivery" ? "An answer didn't arrive" : a.room_title || a.room),
+    h("p", {}, a.sentence),
+    st ? h("p", { class: st.error ? "err" : "small" }, st.text) : null,
+    h("div", { class: "acts" },
+      act ? h("button", { class: "go", disabled: st && !st.error ? true : null, onclick: e => act.kind === "wake" ? wakeRoom(a.room, e.target) : act.kind === "resume" ? setPaused(a.room, false) : refresh() }, act.label) : null,
+      h("button", { class: "ghost", onclick: () => location.hash = "#/room/" + encodeURIComponent(a.room) }, "See room")));
+}
+async function wakeRoom(room, btn) {
+  vib(); if (btn) { btn.disabled = true; btn.textContent = "Waking…"; }
+  ui.wakeState[room] = { text: "Waking the lead…" };
+  const r = await postJSON(`rooms/${encodeURIComponent(room)}/wake`, {}).catch(e => ({ ok: false, error: e.message }));
+  ui.wakeState[room] = r.ok ? { text: "Lead told. This updates when it starts working." } : { error: true, text: "Couldn't reach the lead: " + r.error };
+  setTimeout(() => { delete ui.wakeState[room]; refresh(); }, 30000);
+  refresh();
+}
+async function setPaused(room, paused) {
+  vib();
+  const r = await postJSON(`rooms/${encodeURIComponent(room)}/pause`, { paused }).catch(e => ({ ok: false, error: e.message }));
+  toast(r.ok ? (paused ? "Paused · lead told" : "Resumed · lead told") : "Not saved: " + r.error);
+  refresh();
+}
+
+// ---------------------------------------------------------------- cards
+function cardOrReceipt(c) { const r = ui.receipts[key(c)]; return r ? receipt(c, r) : card(c); }
+function metaRow(c) {
+  return h("div", { class: "meta" }, glyph(c.room_status), h("span", { class: "room" }, (c.room_title || c.room) + (c.room_status_note ? " · " + c.room_status_note : "")), h("span", { class: "sp" }),
+    c.urgent ? h("span", { class: "pill urgent" }, "Urgent") : null,
+    c.reply_unread ? h("span", { class: "pill reply" }, "Reply") : null,
+    c.waiting_min > 2880 ? h("span", { class: "pill old", title: `waiting ${ago(c.waiting_min)}` }, "Old · " + ago(c.waiting_min)) : h("span", { class: "pill" }, ago(c.waiting_min)));
+}
+function pausedNote(c) {
+  if (c.room_status !== "paused" && !/paused/.test(c.room_status_note || "")) return null;
+  const first = cards().find(x => x.room === c.room && !ui.receipts[key(x)]); if (first !== c) return null; // once per room
+  const k = key(c);
+  return h("div", { class: "paused-note" }, h("span", { "aria-hidden": "true" }, "‖"),
+    h("div", {}, "This room is paused. Your answer is saved now; the lead picks it up when you resume.",
+      h("label", {}, h("input", { type: "checkbox", checked: ui.resumeToo[k] || null, onchange: e => { ui.resumeToo[k] = e.target.checked; } }), "Resume the room too")));
+}
+function card(c) {
+  const k = key(c), noteOn = ui.noteOpen.has(k) || !!ui.notes[k];
+  const el = h("article", { class: "card" + (c.urgent ? " urgent" : ""), "aria-labelledby": "q-" + k });
+  el.append(metaRow(c));
+  if (ui.changed[k] || c.changed_since_seen) el.append(h("button", { class: "changed", onclick: () => { delete ui.changed[k]; refresh(); } }, "Changed · see what's new"));
+  el.append(h("h2", { class: "q", id: "q-" + k }, c.title), h("p", { class: "cons" }, c.urgent || c.consequence || "Nothing waits on this yet."));
+  if (c.thread?.length) el.append(h("div", { class: "thread" }, c.thread.map(t => h("div", { class: "bub" + (t.mine ? " me" : "") }, h("small", {}, `${t.who} · ${t.at}`), t.text))));
+  const pn = pausedNote(c); if (pn) el.append(pn);
+  const locked = !!ui.changed[k];
+  if (c.kind === "todo") el.append(todoBody(c, locked));
+  else if (c.kind === "ask" || (c.free_text && !(c.options || []).length)) el.append(askBody(c, locked));
+  else {
+    if (c.kind === "prd") el.append(h("button", { class: "secondary", style: "margin:0 0 10px", onclick: () => openRecord(c.room, "PRD") }, "Read PRD ›"));
+    const opts = h("div", { class: "opts", role: "group", "aria-label": "Options" });
+    for (const o of c.options || []) {
+      const isPick = c.pick && c.pick.key === o.key;
+      opts.append(h("button", { class: "opt" + (isPick ? " pick" : ""), disabled: locked || null, onclick: () => choose(c, o) },
+        h("span", { class: "k" }, o.key), h("span", { class: "l" }, h("b", {}, (ui.notes[k] ? "Send " : "") + o.label + (ui.notes[k] ? " + note" : "")), o.detail ? h("small", {}, o.detail) : null),
+        isPick ? h("span", { class: "tag" }, "Team pick") : null));
+    }
+    el.append(opts);
+    if (c.pick?.reason) el.append(h("p", { class: "why1" }, h("b", {}, "Why " + c.pick.key + ": "), c.pick.reason));
+    if (noteOn) el.append(noteBox(c));
+  }
+  el.append(h("div", { class: "foot" },
+    h("button", { onclick: () => openRecord(c.room, c.id, c) }, "Context ›"),
+    c.kind !== "ask" ? h("button", { onclick: () => openAsk(c) }, "Ask") : null,
+    c.kind === "decision" || c.kind === "premise" || c.kind === "prd" ? h("button", { "aria-expanded": String(noteOn), onclick: () => { ui.noteOpen.has(k) ? ui.noteOpen.delete(k) : ui.noteOpen.add(k); render(); setTimeout(() => document.getElementById("n-" + k)?.focus(), 0); } }, noteOn ? "No note" : "Note") : null,
+    h("span", { class: "sp" }),
+    c.hard_to_undo ? h("span", { class: "lock" }, lockIcon(), " Hard to undo") : null));
+  return el;
+}
+function lockIcon() {
+  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  s.setAttribute("width", "14"); s.setAttribute("height", "14"); s.setAttribute("viewBox", "0 0 20 20"); s.setAttribute("aria-hidden", "true");
+  s.innerHTML = '<path fill="currentColor" d="M6 9V6a4 4 0 0 1 8 0v3h1.5v9h-11V9H6zm2 0h4V6a2 2 0 0 0-4 0v3z"/>';
+  return s;
+}
+function setNote(k, v) { if (v) ui.notes[k] = v; else delete ui.notes[k]; save("notes", ui.notes); }
+function noteBox(c) {
+  const k = key(c);
+  return h("div", { class: "notebox" }, h("textarea", { id: "n-" + k, rows: 2, placeholder: "Note for the lead", "aria-label": "Note, sent with your answer",
+    oninput: e => setNote(k, e.target.value) }, ui.notes[k] || ""),
+    h("small", {}, "Sent with whichever option you tap."));
+}
+function todoBody(c, locked) {
+  const k = key(c), done = (ui.todo[k] ||= new Set()), steps = c.steps || [];
+  const list = h("ol", { class: "steps" }, steps.map((s, i) => h("li", { class: done.has(i) ? "done" : "" },
+    h("input", { type: "checkbox", "aria-label": `Step ${i + 1} done`, checked: done.has(i) || null, onchange: e => { e.target.checked ? done.add(i) : done.delete(i); render(); } }),
+    h("span", { class: "t" }, s.text),
+    s.copy ? h("button", { class: "copy", onclick: e => copy(s.copy, e.target) }, "Copy") : s.url ? h("a", { class: "copy", href: s.url, target: "_blank", rel: "noopener", style: "display:inline-grid;place-items:center;text-decoration:none" }, "Open") : null)));
+  const doneOpt = (c.options || [])[0] || { key: "a", label: "Done, I did this" };
+  const notYet = (c.options || [])[1];
+  return h("div", {}, list, h("div", { class: "row2" },
+    h("button", { class: "primary", disabled: locked || null, onclick: () => choose(c, doneOpt) }, steps.length && done.size === steps.length ? "Done ✓" : "Done"),
+    h("button", { class: "secondary", onclick: () => notYet ? openNotYet(c, notYet) : openAsk(c, "Can't do this yet because ") }, "Can't yet…")));
+}
+function askBody(c, locked) {
+  const k = key(c);
+  const send = h("button", { class: "primary", id: "s-" + k, style: "margin-top:8px", disabled: locked || !(ui.notes[k] || "").trim() || null,
+    onclick: () => choose(c, { key: "note", label: (ui.notes[k] || "").trim() }) }, "Send");
+  return h("div", {},
+    (c.options || []).length ? h("div", { class: "chips" }, c.options.map(o => h("button", { class: "chip", onclick: () => { setNote(k, o.label); render(); } }, o.label))) : null,
+    h("textarea", { id: "n-" + k, rows: 2, placeholder: c.free_text?.placeholder || "Your answer", "aria-label": "Your answer",
+      oninput: e => { setNote(k, e.target.value); send.disabled = locked || !e.target.value.trim(); } }, ui.notes[k] || ""),
+    send);
+}
+function copy(text, btn) {
+  const done = () => { btn.textContent = "Copied"; vib(); setTimeout(() => btn.textContent = "Copy", 1500); };
+  (navigator.clipboard?.writeText(text) || Promise.reject()).then(done, () => { const t = h("textarea", {}, text); document.body.append(t); t.select(); try { document.execCommand("copy"); } catch {} t.remove(); done(); });
+}
+
+// answer: receipt with an undo window, then POST, then follow delivery
+function choose(c, o) {
+  vib();
+  const k = key(c), secs = c.hard_to_undo ? 10 : 6;
+  const note = o.key === "note" ? "" : (ui.notes[k] || "").trim();
+  const body = { choice: o.key, note: o.key === "note" ? o.label : note || undefined, client_id: uid(), if_match: c.updated };
+  ui.receipts[k] = { o, phase: "undo", until: Date.now() + secs * 1000, secs, body, room: c.room, id: c.id, resume: !!ui.resumeToo[k] };
+  ui.pending[k] = setTimeout(() => send(c), secs * 1000);
+  render();
+}
+function undo(c) { const k = key(c); clearTimeout(ui.pending[k]); delete ui.pending[k]; delete ui.receipts[k]; render(); toast("Undone. Nothing was sent."); }
+async function send(c) {
+  const k = key(c), r = ui.receipts[k]; if (!r) return;
+  delete ui.pending[k];
+  r.phase = "sending"; render();
+  const out = await postJSON(`cards/${encodeURIComponent(c.room)}/${encodeURIComponent(c.id)}/answer`, r.body).catch(e => ({ ok: false, error: e.message }));
+  if (out.status === 409 || out.changed) { delete ui.receipts[k]; ui.changed[k] = true; render(); toast("The card changed while you looked. Read it again."); return; }
+  if (!out.ok) { r.phase = "fail"; r.error = out.error || "unknown error"; render(); return; }
+  setNote(k, ""); ui.noteOpen.delete(k);
+  r.receipt_id = out.receipt_id; r.phase = out.delivery || "saved";
+  if (r.resume) setPaused(c.room, false);
+  render(); followReceipts();
+}
+async function retry(c) { const r = ui.receipts[key(c)]; if (!r) return; r.body.client_id = uid(); send(c); }
+let receiptTimer;
+async function followReceipts() {
+  clearTimeout(receiptTimer);
+  const open = Object.entries(ui.receipts).filter(([, r]) => r.receipt_id && !r.gone && !["lead_read", "error"].includes(r.phase));
+  if (!open.length) return;
+  try {
+    const list = await getJSON("receipts?ids=" + open.map(([, r]) => encodeURIComponent(r.receipt_id)).join(","));
+    for (const rc of Array.isArray(list) ? list : []) {
+      const hit = open.find(([, r]) => r.receipt_id === rc.id); if (!hit) continue;
+      const r = hit[1]; r.phase = rc.delivery; r.at = rc.at; r.error = rc.error;
+      if (rc.delivery === "lead_read") setTimeout(() => { r.gone = true; render(); if (needCount() === 0) toast("That was the last one."); refresh(); }, 3000);
+    }
+    render();
+  } catch {}
+  receiptTimer = setTimeout(followReceipts, 4000);
+}
+function receipt(c, r) {
+  if (r.gone) return h("span");
+  const lead = leadName(roomOf(c.room));
+  const pick = c.kind === "todo" ? r.o.label : c.kind === "ask" || r.o.key === "note" ? `“${r.o.label}”` : `${r.o.key} · ${r.o.label}`;
+  const at = r.at ? " · " + String(r.at).slice(11, 16) : "";
+  const paused = c.room_status === "paused" && !r.resume;
+  const line = {
+    undo: c.hard_to_undo ? "Hard to undo: this can't be changed once it's sent." : "Sending in a moment.",
+    sending: "Sending…",
+    saved: paused ? `Saved · ${lead} sees it when you resume the room.` : `Saved · waking ${lead}…`,
+    lead_told: `Sent · ${lead} is told${at}`,
+    lead_read: `${cap(lead)} read it${at}`,
+    error: `Saved, but the lead wasn't reached: ${r.error || "unknown"}`,
+    fail: `Not sent: ${r.error}. Your choice is kept; try again.`,
+  }[r.phase] || r.phase;
+  const el = h("div", { class: "receipt" + (r.phase === "fail" || r.phase === "error" ? " fail" : ""), role: "status" },
+    h("div", { class: "r1" }, h("span", { class: "tick", "aria-hidden": "true" }, r.phase === "fail" ? "!" : "✓"),
+      h("div", { class: "tx" }, h("b", {}, pick), h("small", {}, c.title.length > 60 ? c.title.slice(0, 58) + "…" : c.title), h("br"), h("small", {}, line)),
+      r.phase === "undo" ? h("button", { class: "undo", onclick: () => undo(c) }, "Undo") : null,
+      r.phase === "fail" ? h("button", { class: "undo", onclick: () => retry(c) }, "Try again") : null));
+  if (r.phase === "undo") {
+    const d = h("i", { class: "drain" }); el.append(d);
+    const left = Math.max(0, r.until - Date.now());
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) d.style.display = "none";
+    else d.animate([{ transform: `scaleX(${left / (r.secs * 1000)})` }, { transform: "scaleX(0)" }], { duration: left, fill: "forwards" });
+  }
+  return el;
+}
+// Going ahead unless you stop it: provisional calls with a default and a due time.
+function goingAheadCard(c) {
+  const k = key(c), open = ui.openGroups.has("ga:" + k), rc = ui.receipts["ga:" + k];
+  if (rc) return h("div", { class: "receipt" + (rc.phase === "fail" ? " fail" : ""), role: "status" }, h("div", { class: "r1" }, h("span", { class: "tick" }, rc.phase === "fail" ? "!" : "✓"),
+    h("div", { class: "tx" }, h("b", {}, c.title), h("small", {}, rc.phase === "fail" ? "Not stopped: " + rc.error : rc.text)), rc.phase === "fail" ? h("button", { class: "undo", onclick: () => { delete ui.receipts["ga:" + k]; render(); } }, "Back") : null));
+  const left = c.due_at ? minsUntil(c.due_at) : null;
+  const def = (c.options || []).find(o => o.key === c.default_key);
+  const el = h("article", { class: "card", "aria-labelledby": "q-ga-" + k },
+    h("div", { class: "meta" }, glyph(c.room_status), h("span", { class: "room" }, c.room_title || c.room), h("span", { class: "sp" }), left != null ? h("span", { class: "countdown" }, left > 0 ? "in " + dur(left) : "due now") : null),
+    h("h2", { class: "q", id: "q-ga-" + k }, c.title),
+    h("p", { class: "cons" }, def ? h("b", {}, `Goes ahead with ${def.key} · ${def.label}`) : null, def ? h("br") : null, c.consequence || ""));
+  if (!open) el.append(h("div", { class: "row2", style: "margin:0 0 12px" },
+    h("button", { class: "secondary", onclick: () => { ui.openGroups.add("ga:" + k); render(); } }, "Stop it…"),
+    h("button", { class: "secondary", onclick: () => { ui.dismissed.add(k + "@" + c.due_at); save("dismissed", [...ui.dismissed].slice(-200)); render(); toast(`Fine: ${c.default_key} goes ahead.`); } }, "Fine, go ahead")));
+  else el.append(h("div", { class: "opts", style: "margin-bottom:12px" }, (c.options || []).map(o => h("button", { class: "opt" + (o.key === c.default_key ? " pick" : ""),
+    onclick: () => o.key === c.default_key ? (ui.openGroups.delete("ga:" + k), render(), toast("Kept the default.")) : stopIt(c, o) },
+    h("span", { class: "k" }, o.key), h("span", { class: "l" }, h("b", {}, o.label), o.detail ? h("small", {}, o.detail) : null), o.key === c.default_key ? h("span", { class: "tag" }, "Default") : null))));
+  return el;
+}
+async function stopIt(c, o) {
+  vib();
+  const k = "ga:" + key(c);
+  ui.receipts[k] = { phase: "sending", text: "Stopping…" }; render();
+  const out = await postJSON(`cards/${encodeURIComponent(c.room)}/${encodeURIComponent(c.id)}/stop`, { choice: o.key }).catch(e => ({ ok: false, error: e.message }));
+  ui.receipts[k] = out.ok ? { phase: "saved", text: `Stopped. The lead switches to ${o.key} · ${o.label}.` } : { phase: "fail", error: out.error };
+  render();
+  if (out.ok) setTimeout(() => { ui.receipts[k].gone = true; refresh(); }, 3000);
+}
+
+// ---------------------------------------------------------------- sheets
+function sheet(...kids) {
+  const d = $("#sheet");
+  d.replaceChildren(h("div", { class: "sh" }, h("div", { class: "grab", "aria-hidden": "true" }), ...kids));
+  if (!d.open) d.showModal();
+  d.onclick = e => { if (e.target === d) d.close(); };
+}
+$("#sheet").addEventListener("close", () => { if (routes()[0] === "card") history.replaceState(null, "", "#/"); });
+const closeBtn = () => h("button", { class: "x", "aria-label": "Close", onclick: () => $("#sheet").close() }, "×");
+// The record sheet: a card's context, or any record (item, PRD) by id.
+async function openRecord(room, id, c) {
+  const rt = roomOf(room).title;
+  sheet(h("div", { class: "top" }, h("h2", {}, c?.title || id), closeBtn()), h("p", { class: "small" }, "Loading…"));
+  let d;
+  try { d = await getJSON(`cards/${encodeURIComponent(room)}/${encodeURIComponent(id)}`); }
+  catch (e) { sheet(h("div", { class: "top" }, h("h2", {}, c?.title || id), closeBtn()), h("p", { class: "err" }, "Couldn't load it: " + e.message)); return; }
+  const sec = (t, body) => body ? [h("h3", {}, t), h("p", { class: "sec-body" }, body)] : null;
+  const known = new Set(["why it matters", "options", "answer", "questions", "steps"]);
+  const extra = (d.sections || []).filter(s => !(c && known.has(String(s.h).toLowerCase())));
+  sheet(h("div", { class: "top" }, h("h2", {}, d.title || c?.title || id), closeBtn()),
+    h("p", { class: "small" }, [rt, d.id || id, d.state || d.status, c ? "waiting " + ago(c.waiting_min) : null, c?.hard_to_undo ? "hard to undo" : null, d.owner].filter(Boolean).join(" · ")),
+    sec("Why it matters", d.why),
+    sec("Where it came from", d.source),
+    c ? sec("What waits on it", c.consequence) : null,
+    c?.pick ? sec("Team's pick", `${c.pick.key}: ${c.pick.reason}`) : null,
+    (d.thread || []).length ? [h("h3", {}, "Questions"), h("div", { class: "thread" }, d.thread.map(t => h("div", { class: "bub" + (t.mine ? " me" : "") }, h("small", {}, `${t.who} · ${t.at}`), t.text)))] : null,
+    extra.map(s => sec(s.h, s.text)),
+    (d.history || []).length ? [h("h3", {}, "History"), h("p", { class: "sec-body" }, d.history.map(x => typeof x === "string" ? x : `${x.at || ""} ${x.who || ""} ${x.text || ""}`.trim()).join("\n"))] : null,
+    d.file ? h("p", { class: "small" }, "File: " + d.file) : null);
+}
+function openAsk(c, prefill = "") {
+  const lead = leadName(roomOf(c.room));
+  const ta = h("textarea", { rows: 4, placeholder: `Ask ${lead} about this`, "aria-label": "Your question" }, prefill);
+  const err = h("p", { class: "err", hidden: true });
+  sheet(h("div", { class: "top" }, h("h2", {}, prefill ? "Can't do this yet" : `Ask ${lead}`), closeBtn()),
+    h("p", { class: "small", style: "margin-top:4px" }, c.title),
+    (c.options || []).length ? h("p", { class: "small" }, c.options.map(o => `${o.key}) ${o.label}`).join("   ")) : null,
+    ta, h("p", { class: "small" }, "The card moves to “Waiting on the team” until the reply comes back."), err,
+    h("button", { class: "primary", onclick: async e => {
+      const text = ta.value.trim(); if (!text) { ta.focus(); return; }
+      e.target.disabled = true;
+      const out = await postJSON(`cards/${encodeURIComponent(c.room)}/${encodeURIComponent(c.id)}/question`, { text, client_id: uid() }).catch(x => ({ ok: false, error: x.message }));
+      if (!out.ok) { err.hidden = false; err.textContent = "Not sent: " + out.error; e.target.disabled = false; return; }
+      $("#sheet").close(); vib();
+      ui.waiting.push({ room: c.room, id: c.id, title: c.title, who: lead, text, asked_at: new Date().toISOString() });
+      render(); toast(`Sent · waking ${lead}`);
+    } }, "Send question"));
+  setTimeout(() => ta.focus(), 50);
+}
+function openNotYet(c, o) {
+  const k = key(c);
+  const ta = h("textarea", { rows: 3, placeholder: "Why not yet?", "aria-label": "Why not yet" }, ui.notes[k] || "");
+  sheet(h("div", { class: "top" }, h("h2", {}, "Can't do this yet"), closeBtn()), h("p", { class: "small" }, c.title), ta,
+    h("button", { class: "primary", style: "margin-top:10px", onclick: () => { setNote(k, ta.value.trim()); $("#sheet").close(); choose(c, o); } }, "Send"));
+  setTimeout(() => ta.focus(), 50);
+}
+function confirmPause(r) {
+  sheet(h("div", { class: "top" }, h("h2", {}, `Pause ${r.title}?`), closeBtn()),
+    h("p", {}, "Agents finish their current step, write it down and stop. Nothing new starts until you resume. Cards stay answerable."),
+    h("div", { class: "row2" }, h("button", { class: "secondary", onclick: () => $("#sheet").close() }, "Cancel"),
+      h("button", { class: "primary", onclick: () => { $("#sheet").close(); setPaused(r.name, true); } }, "Pause")));
+}
+
+// ---------------------------------------------------------------- rooms
+const ORDER = { stuck: 0, needs_you: 1, moving: 2, waiting_outside: 3, paused: 4, idle: 5, done: 6 };
+function roomRow(r) {
+  return h("button", { class: "rrow", onclick: () => location.hash = "#/room/" + encodeURIComponent(r.name), "aria-label": `${r.title}: ${WORD[r.status] || r.status}. ${r.sentence || ""}` },
+    glyph(r.status), h("span", { class: "tx" }, h("b", {}, r.title), h("small", {}, r.sentence || WORD[r.status]),
+      r.last_activity_min != null ? h("small", { class: "when" }, `Last activity ${ago(r.last_activity_min)}${r.last_activity_min ? " ago" : ""}${r.last_activity_by ? " · " + r.last_activity_by : ""}`) : null),
+    r.cards ? h("span", { class: "badge" }, r.cards) : null, h("span", { class: "chev", "aria-hidden": "true" }, "›"));
+}
+function roomsView() {
+  const f = document.createDocumentFragment();
+  if (!S.rooms) { f.append(h("h1", {}, "Rooms"), h("div", { class: "skel" })); return f; }
+  // a done room with open cards is never filed as done
+  const isDone = r => r.status === "done" && !r.cards;
+  const live = S.rooms.filter(r => !isDone(r) && !r.standing).sort((a, b) => (ORDER[a.status] ?? 9) - (ORDER[b.status] ?? 9));
+  const done = S.rooms.filter(isDone), std = S.rooms.filter(r => r.standing && !isDone(r));
+  f.append(h("h1", {}, "Rooms"), h("p", { class: "pulse", style: "min-height:0" }, `${live.length} live · ${done.length} done`));
+  if (!S.rooms.length) f.append(h("div", { class: "empty" }, h("b", {}, "No rooms yet"), "Create one from a Claude Code session: rooms new <room> \"Title\"."));
+  if (live.length) f.append(h("div", { class: "rlist" }, live.map(roomRow)));
+  if (std.length) f.append(h("div", { class: "sec" }, h("span", {}, "Standing"), h("span", {})), h("div", { class: "rlist" }, std.map(roomRow)));
+  if (done.length) {
+    f.append(h("div", { class: "sec" }, h("span", {}, `Done · ${done.length}`), h("span", {})));
+    f.append(ui.openGroups.has("done") ? h("div", { class: "rlist" }, done.map(roomRow))
+      : h("button", { class: "group", onclick: () => { ui.openGroups.add("done"); render(); } }, glyph("done"), h("span", { class: "gtx" }, `${done.length} done room${done.length > 1 ? "s" : ""}`, h("br"), h("small", {}, "None has open cards")), h("span", { class: "chev" }, "›")));
+  }
+  return f;
+}
+function itemRows(room, items, sub) {
+  return h("div", { class: "items" }, items.map(i => h("button", { class: "it", onclick: () => openRecord(room, i.id) },
+    h("span", { class: "id" }, i.id), h("span", { class: "tt" }, i.title, h("small", {}, sub(i))), i.critical ? h("span", { class: "star", title: "critical path" }, "★") : null)));
+}
+function roomView(name) {
+  const f = document.createDocumentFragment();
+  const r = S.detail[name];
+  f.append(h("button", { class: "back", onclick: () => history.length > 1 ? history.back() : location.hash = "#/rooms" }, "‹ Rooms"));
+  if (!r) { f.append(h("h1", {}, roomOf(name).title), h("div", { class: "skel" })); return f; }
+  f.append(h("h1", {}, r.title));
+  const st = ui.wakeState[name];
+  const act = r.action ? h("button", { class: "primary", disabled: st && !st.error ? true : null, onclick: e => r.action.kind === "wake" ? wakeRoom(name, e.target) : r.action.kind === "resume" ? setPaused(name, false) : refresh() }, r.action.label) : null;
+  const L = r.lead;
+  const leadLine = L ? `Lead: ${L.name && L.name !== "lead" ? L.name : "unnamed"} · ${{ working: "working now", idle: "idle " + ago(L.since_min), finished: "finished " + ago(L.since_min) + " ago", unreachable: "unreachable" }[L.state] || ""}` : null;
+  f.append(h("section", { class: "hero" + (r.status === "stuck" ? " stuck" : ""), "aria-label": "Room status" },
+    h("div", { class: "sline" }, glyph(r.status), h("span", {}, h("span", { class: "sr" }, (WORD[r.status] || r.status) + ": "), r.sentence || WORD[r.status])),
+    leadLine ? h("div", { class: "who" }, leadLine) : null,
+    st ? h("p", { class: st.error ? "err" : "small", style: "margin:8px 0 0 32px" }, st.text) : null, act));
+  if (r.phase) f.append(h("p", { class: "phase" }, r.phase));
+  for (const a of r.attention || []) f.append(h("p", { class: a.level === "loud" ? "err" : "small", style: "margin:4px 2px" }, (a.level === "loud" ? "▲ " : "· ") + a.sentence));
+  const mine = cards().filter(c => c.room === name);
+  if (mine.length) {
+    f.append(h("div", { class: "sec" }, h("span", {}, "Needs you"), h("span", {}, mine.length)));
+    mine.slice(0, 2).forEach(c => f.append(cardOrReceipt(c)));
+    if (mine.length > 2) f.append(h("button", { class: "group", onclick: () => { ui.openGroups.add(name); location.hash = "#/"; } }, h("span", { class: "gtx" }, `${mine.length - 2} more in Needs you`), h("span", { class: "chev" }, "›")));
+  }
+  const w = r.work || {}, sec = (t, n) => h("div", { class: "sec" }, h("span", {}, t), h("span", {}, n));
+  const moving = w.moving || [], review = w.review || [], ready = w.ready_unstaffed || [], waiting = w.waiting || [], onYou = w.blocked_on_you || [];
+  if (moving.length) f.append(sec("Moving now", moving.length), itemRows(name, moving, i => `${i.owner_name || "unassigned"} · started ${ago(i.age_min || 0)}${i.age_min ? " ago" : ""}`));
+  else if (r.status !== "done") f.append(sec("Moving now", 0), h("p", { class: "small", style: "margin:0 2px" }, "No one is working in this room."));
+  if (review.length) f.append(sec("In review", review.length), itemRows(name, review, i => i.owner_name || ""));
+  if (ready.length) f.append(sec("Ready, no agent", ready.length), itemRows(name, ready, i => i.owner_name ? `for ${i.owner_name}` : "no owner yet"));
+  if (waiting.length) f.append(sec("Waiting", waiting.length), itemRows(name, waiting, i => [i.owner_name, i.waits_on ? "waits on " + i.waits_on : i.after?.length ? "after " + i.after.join(", ") : ""].filter(Boolean).join(" · ")));
+  if (onYou.length) f.append(sec("Blocked on you", onYou.length), itemRows(name, onYou, i => i.owner_name || ""));
+  const waves = r.plan?.waves || [], crit = r.plan?.critical || [];
+  if (waves.length > 1) {
+    f.append(sec("Plan", crit.length ? "★ critical path" : ""));
+    f.append(h("div", { class: "items" }, waves.map(wv => h("div", { class: "it" }, h("span", { class: "id" }, ""), h("span", { class: "tt" }, h("b", {}, wv.label),
+      h("small", {}, (wv.items || []).map(i => { const id = typeof i === "string" ? i : i.id; return id + (crit.includes(id) ? " ★" : ""); }).join(" · ")))))));
+  }
+  if (w.done_count) f.append(h("p", { class: "small", style: "margin:8px 2px" }, `${w.done_count} item${w.done_count > 1 ? "s" : ""} done`));
+  if ((r.decided || []).length) f.append(sec("Decided recently", r.decided.length), h("div", { class: "items" }, r.decided.map(d => h("button", { class: "it", onclick: () => openRecord(name, d.id) },
+    h("span", { class: "id" }, d.id), h("span", { class: "tt" }, d.title, h("small", {}, [d.went_ahead ? "went ahead with " + d.answer_label : d.answer_label, d.by, d.at].filter(Boolean).join(" · "), d.reversed ? " · REVERSED " + d.reversed : ""))))));
+  if (r.lead_note?.text) f.append(sec(`From ${L?.name && L.name !== "lead" ? L.name : "the lead"}`, r.lead_note.at ? String(r.lead_note.at).slice(0, 16).replace("T", " ") : ""), h("div", { class: "note sec-body" }, r.lead_note.text));
+  if (r.status !== "done" && !r.standing) f.append(h("div", { style: "margin-top:22px" },
+    r.paused ? (r.action?.kind === "resume" ? null : h("button", { class: "secondary", onclick: () => setPaused(name, false) }, "Resume the team")) : h("button", { class: "secondary", onclick: () => confirmPause(r) }, "Pause the team")));
+  return f;
+}
+
+// ---------------------------------------------------------------- more
+function moreView() {
+  const f = document.createDocumentFragment();
+  const theme = document.documentElement.dataset.theme || "auto";
+  f.append(h("h1", {}, "More"));
+  f.append(h("div", { class: "sec" }, h("span", {}, "Settings"), h("span", {})));
+  f.append(h("div", { class: "items" },
+    h("div", { class: "setrow" }, h("span", {}, "Theme"), h("div", { class: "seg", role: "group", "aria-label": "Theme" }, ["auto", "light", "dark"].map(k => h("button", { "aria-pressed": String(theme === k),
+      onclick: () => { if (k === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = k; save("theme", k); render(); } }, k))))));
+  f.append(h("div", { class: "sec" }, h("span", {}, "About"), h("span", {})));
+  f.append(h("div", { class: "note" },
+    h("p", { style: "margin:0 0 6px" }, "claude-rooms: agent teams for Claude Code. Each room is a folder of plain markdown records; this page shows what needs you and how each team is doing."),
+    S.roomsHome ? h("p", { class: "small", style: "margin:0 0 4px" }, "Rooms home: ", h("code", {}, S.roomsHome)) : null,
+    h("p", { class: "small", style: "margin:0" }, S.loadedAt ? `Updated ${hhmm(S.loadedAt)} · refreshes every ${POLL_MS / 1000}s while open` : "Not loaded yet")));
+  return f;
+}
+
+// A choice still inside its undo window is sent when the page goes away.
+addEventListener("pagehide", () => {
+  for (const [k, r] of Object.entries(ui.receipts)) {
+    if (r.phase !== "undo" || !ui.pending[k]) continue;
+    clearTimeout(ui.pending[k]);
+    navigator.sendBeacon?.(api(`cards/${encodeURIComponent(r.room)}/${encodeURIComponent(r.id)}/answer`), new Blob([JSON.stringify(r.body)], { type: "text/plain" }));
+  }
+});
+// countdowns and ages tick without a refetch
+setInterval(() => document.visibilityState === "visible" && safeRender(), 60000);
+
+const t0 = load("theme", "auto"); if (t0 !== "auto") document.documentElement.dataset.theme = t0;
+render(); refresh(); startPolling();
+if (routes()[0] === "card") { const [, b, c] = routes(); refresh().then(() => openRecord(b, c)); }
+</script>
+</body>
+</html>
