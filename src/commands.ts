@@ -474,6 +474,17 @@ export function closeRoom(r: Room, reason: string, force = false): string {
   return `${r.name} closed`
 }
 
+export function setTitle(r: Room, title: string): string {
+  const t = title.replace(/\s+/g, ' ').trim()
+  if (!t) fail('give a title')
+  const b = r.brief
+  if (b.get('title') === t) return `${r.name} already titled ${t}`
+  b.set('title', t)
+  b.save()
+  changed(r, `title: ${t}`)
+  return `${r.name} titled ${t}`
+}
+
 export function setPaused(r: Room, on: boolean): string {
   const b = r.brief
   if (!!b.get('paused') === on) return `${r.name} already ${on ? 'paused' : 'running'}`

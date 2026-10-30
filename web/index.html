@@ -73,6 +73,8 @@ h1 .count { color:var(--signal); }
 .foot button { background:none; border:0; min-height:44px; padding:0 10px; font-size:15px; color:var(--accent); font-weight:500; }
 .foot .sp { flex:1; }
 .foot .lock { display:inline-flex; align-items:center; gap:4px; font-size:13px; color:var(--ink-2); padding:0 8px; }
+.retitle { font:inherit; color:inherit; background:none; border:0; padding:0; text-align:left; cursor:pointer; }
+.retitle:hover { text-decoration:underline dotted; text-underline-offset:4px; }
 textarea, input[type=text] { width:100%; font:inherit; font-size:16px; color:var(--ink); background:var(--bg); border:1.5px solid var(--line); border-radius:var(--r-btn); padding:10px 12px; }
 textarea:focus, input:focus, button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .notebox { margin:10px 0 2px; }
@@ -785,6 +787,21 @@ async function closeRoom(room) {
   toast(r.ok ? "Room closed" : "Not closed: " + r.error);
   refresh();
 }
+// The title only: the room's name is its id (folder, sessions, links).
+function renameRoom(r) {
+  const input = h("input", { type: "text", value: r.title, "aria-label": "Room title", maxlength: "120" });
+  const save = async () => {
+    const title = input.value.trim(); if (!title || title === r.title) return $("#sheet").close();
+    $("#sheet").close();
+    const out = await postJSON(`rooms/${encodeURIComponent(r.name)}/title`, { title }).catch(e => ({ ok: false, error: e.message }));
+    toast(out.ok ? "Renamed" : "Not renamed: " + out.error);
+    refresh();
+  };
+  input.onkeydown = e => { if (e.key === "Enter") save(); };
+  sheet(h("div", { class: "top" }, h("h2", {}, "Rename the room"), closeBtn()), input,
+    h("div", { class: "row2" }, h("button", { class: "secondary", onclick: () => $("#sheet").close() }, "Cancel"), h("button", { class: "primary", onclick: save }, "Save")));
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+}
 function confirmPause(r) {
   sheet(h("div", { class: "top" }, h("h2", {}, `Pause ${r.title}?`), closeBtn()),
     h("p", {}, "Agents finish their current step, write it down and stop. Nothing new starts until you resume. Cards stay answerable."),
@@ -926,7 +943,7 @@ function roomView(name) {
   const r = S.detail[name];
   f.append(h("button", { class: "back", onclick: () => history.length > 1 ? history.back() : location.hash = "#/rooms" }, "‹ Rooms"));
   if (!r) { f.append(h("h1", {}, roomOf(name).title), h("div", { class: "skel" })); return f; }
-  f.append(h("h1", {}, r.title));
+  f.append(h("h1", {}, h("button", { class: "retitle", "aria-label": `${r.title}. Rename the room`, onclick: () => renameRoom(r) }, r.title)));
   const st = ui.wakeState[name];
   const act = r.action ? h("button", { class: "primary", disabled: st && !st.error ? true : null, onclick: e => r.action.kind === "wake" ? wakeRoom(name, e.target) : r.action.kind === "resume" ? setPaused(name, false) : refresh() }, r.action.label) : null;
   const L = r.lead;
