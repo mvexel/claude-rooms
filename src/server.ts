@@ -11,7 +11,7 @@ import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
 import { type Session, findSession, isRunning, listSessions } from './sessions.ts'
 import { cardRank, doingSince, isHuman, roomState, type RoomState, waves } from './state.ts'
-import { closeRoom, setPaused, sweep } from './commands.ts'
+import { closeRoom, setPaused, setTitle, sweep } from './commands.ts'
 
 // The owner's page and its API (shapes in docs/ui.md, from the UX spec §8).
 // GETs are open to whoever reaches the port; POSTs need ROOMS_USERS to list
@@ -366,6 +366,7 @@ export async function serve(o: ServeOptions): Promise<void> {
         const room = new Room(parts[2]).must()
         if (parts[3] === 'pause') return send(req, res, 202, { ok: true, message: setPaused(room, !!body.paused) })
         if (parts[3] === 'close') return send(req, res, 202, { ok: true, message: closeRoom(room, 'closed by the owner on the page') })
+        if (parts[3] === 'title') return send(req, res, 202, { ok: true, message: setTitle(room, String(body.title ?? '')) })
         if (parts[3] === 'wake') {
           const st = roomState(room, { sessions: fresh() })
           const note = String(body.note ?? '').trim()
