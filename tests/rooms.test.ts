@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Record } from '../src/record.ts'
@@ -55,6 +55,22 @@ test('records round-trip older files, inline comments included', () => {
   r.set('state', 'review')
   assert.match(r.toString(), /^state: review            # todo \| doing$/m)
   assert.equal(new Record('/dev/null', '---\n---\nbody').preamble, 'body')
+})
+
+test('an unwritable state dir fails rooms new at once, not after the lock deadline', () => {
+  const s = sandbox()
+  const state = s.env.CLAUDE_ROOMS_STATE
+  mkdirSync(join(state, 'locks'), { recursive: true })
+  chmodSync(join(state, 'locks'), 0o500)
+  try {
+    const started = Date.now()
+    const r = s.rooms('new', 'r', 'Room', '--repo', s.home)
+    assert.notEqual(r.code, 0)
+    assert.match(r.err, /cannot write .*\(EACCES\).*\/sandbox/)
+    assert.ok(Date.now() - started < 10_000, 'took the lock deadline')
+  } finally {
+    chmodSync(join(state, 'locks'), 0o700)
+  }
 })
 
 test('one open room per repo per machine; other repos are allowed and paused rooms retain their repo', () => {
