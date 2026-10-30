@@ -11,6 +11,7 @@ async function harness() {
     return { catch() {} }
   })
   let identity = {}
+  let check = ''
   const calls: string[][] = []
   const $ = {
     env: { get: async () => 'rooms' },
@@ -21,13 +22,18 @@ async function harness() {
     process: {
       run: async (args: string[]) => {
         calls.push(args)
-        return { exitCode: 0, stdout: args[2] === 'prompt' ? 'Recorded D01 b' : JSON.stringify(identity) }
+        return { exitCode: 0, stdout: args[2] === 'prompt' ? 'Recorded D01 b' : args[2] === 'check' ? check : JSON.stringify(identity) }
       },
     },
   }
   return {
     hooks, calls,
     identify(value: object) { identity = value },
+    sandbox(note: string) { check = note },
+    async start() {
+      await hooks.get('session.start')!($, {}, async (e: object) => e)
+      await new Promise(r => setTimeout(r, 0))
+    },
     async submit(event: object) {
       return hooks.get('prompt.submit')!($, event, async (e: object) => e)
     },
@@ -78,4 +84,16 @@ test('mail for the session reaches submitted context, even outside a room', asyn
   s.identify({ events: '[rooms] You are no longer the lead of room demo' })
   const e = await s.submit({ text: 'Hello' })
   assert.deepEqual(e.context, ['[rooms] You are no longer the lead of room demo'])
+})
+
+test('a sandbox gap is said once, on the first prompt about rooms', async () => {
+  const s = await harness()
+  s.sandbox('[rooms] Note: the Bash sandbox cannot write ~/rooms')
+  await s.start()
+  const plain = await s.submit({ text: 'fix the build' }) as any
+  assert.equal((plain.context ?? []).length, 0)
+  const first = await s.submit({ text: 'open a room for the importer' }) as any
+  assert.ok(first.context.some((c: string) => c.includes('sandbox cannot write')))
+  const again = await s.submit({ text: 'and the rooms page?' }) as any
+  assert.equal((again.context ?? []).some((c: string) => c.includes('sandbox')), false)
 })

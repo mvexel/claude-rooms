@@ -26,6 +26,9 @@ let busy = false
 let polling = false
 let midAt = 0
 const MID_MS = 10000
+// Set at start when this session's sandbox can't write the rooms home; said
+// once, on the first prompt that has to do with rooms.
+let sandboxNote = ''
 
 async function cli($: EngineInterface, args: string[]) {
   const bin = (await $.env.get('CLAUDE_ROOMS_CLI')) || 'rooms'
@@ -73,6 +76,7 @@ export const register: Register = on => {
     await $.command.register({ name: 'room', description: "This session's room status, or any rooms command: /room status, /room help" })
     $.clock.every(POLL_MS, () => void idleTick($).catch(() => {}))
     void poll($, false).catch(() => {})
+    void cli($, ['hook', 'check']).then(r => { sandboxNote = r.exitCode === 0 ? r.stdout.trim() : '' }).catch(() => {})
     return next(e)
   })
 
@@ -107,6 +111,10 @@ export const register: Register = on => {
     // and the asynchronous startup poll may not have finished yet.
     const mail = await poll($, false, true).catch(() => '')
     if (mail) e = { ...e, context: [...(e.context ?? []), mail] }
+    if (sandboxNote && (me.room || /\brooms?\b/i.test(e.text))) {
+      e = { ...e, context: [...(e.context ?? []), sandboxNote] }
+      sandboxNote = ''
+    }
     if (me.room) {
       const place = me.role === 'lead'
         ? `You lead room ${me.room} (claude-rooms). Follow the rooms:lead skill. Updates for you arrive as "[rooms]" notes; the record, not this conversation, is the memory: when unsure, run rooms status ${me.room}.`
