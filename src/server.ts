@@ -142,7 +142,7 @@ function summary(room: Room, st: RoomState) {
   }
 }
 
-function detail(room: Room, st: RoomState, sessions: Session[]) {
+export function roomDetail(room: Room, st: RoomState, sessions: Session[]) {
   const items = room.items()
   const by = (s: string) => items.filter(i => i.get('state') === s)
   const lead = findSession(room.leadSession(), sessions)
@@ -176,7 +176,26 @@ function detail(room: Room, st: RoomState, sessions: Session[]) {
       blocked_on_you: items.filter(i => OPEN_ITEM.has(i.get('state')) && blockedOnYou.has(i.get('id'))).map(i => item(room, i)),
       done_count: by('done').length,
     },
-    plan: { waves: ws.map((w, k) => ({ label: labels[k] ?? `Wave ${k + 1}`, items: w })), critical: [] as string[] },
+    team_roster: room.brief.section('Team').replace(/^One line per member: role, model tier, charter \(what it owns and what it does not\).$/, '').trim() || undefined,
+    team: [...new Set(items.map(i => i.get('owner')).filter(Boolean)), ...(items.some(i => OPEN_ITEM.has(i.get('state')) && !i.get('owner')) ? ['Unassigned'] : [])].map(name => ({
+      name,
+      items: items.filter(i => OPEN_ITEM.has(i.get('state')) && (i.get('owner') || 'Unassigned') === name)
+        .map(i => {
+          const session = findSession(i.get('agent'), sessions)
+          return { ...item(room, i), state: i.get('state'), tier: i.get('tier') || undefined,
+            session_state: session && isRunning(session) ? (session.status === 'idle' ? 'idle' : 'working') : i.get('agent') ? 'finished' : undefined }
+        }),
+    })),
+    plan: {
+      waves: ws.map((w, k) => ({ label: labels[k] ?? `Wave ${k + 1}`, items: w })),
+      critical: [] as string[],
+      items: items.map(i => ({
+        ...item(room, i),
+        state: i.get('state'),
+        summary: (i.section('Summary') || i.preamble.trim() || i.section('Acceptance'))
+          .replace(/^\s*[-*]\s*(?:\[[ xX]\]\s*)?/gm, '').replace(/\s+/g, ' ').trim().slice(0, 400),
+      })),
+    },
     decided,
     lead_note: head.preamble.trim() ? { text: head.preamble.trim(), at: head.get('updated') } : undefined,
     attention: st.warnings.filter(w => /overrun|cycle|finished|ended|stuck/i.test(w)).map(w => ({ level: /hard|cycle/.test(w) ? 'loud' : 'warn', sentence: w })),
@@ -288,7 +307,7 @@ export async function serve(o: ServeOptions): Promise<void> {
         if (path === '/api/rooms') return send(req, res, 200, { rooms_home: roomsHome(), rooms: states().map(({ room, st }) => summary(room, st)) })
         if (parts[0] === 'api' && parts[1] === 'rooms' && parts[2]) {
           const room = new Room(parts[2]).must()
-          return send(req, res, 200, detail(room, roomState(room, { sessions: fresh() }), fresh()))
+          return send(req, res, 200, roomDetail(room, roomState(room, { sessions: fresh() }), fresh()))
         }
         if (parts[0] === 'api' && parts[1] === 'cards' && parts[2] && parts[3]) {
           const room = new Room(parts[2]).must()

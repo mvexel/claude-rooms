@@ -15,7 +15,7 @@ import type { EngineInterface, Register } from 'claude-code'
 const POLL_MS = 5000
 const WHO_MS = 60000
 
-type Me = { room?: string; role?: string; item?: string; events?: string }
+type Me = { room?: string; role?: string; item?: string; events?: string; status_line?: string }
 
 // Module state; a reload starts it over, which is harmless.
 let me: Me = {}
@@ -44,7 +44,7 @@ async function poll($: EngineInterface, take: boolean): Promise<string> {
   } catch {
     me = {}
   }
-  $.ui.status(me.room ? `Room · ${me.room} · ${me.role}${me.item ? ` · ${me.item}` : ''}` : undefined)
+  $.ui.status(me.room ? `Room · ${me.status_line || me.room}${me.item ? ` · ${me.role} ${me.item}` : ''}` : undefined)
   return me.events ?? ''
 }
 
