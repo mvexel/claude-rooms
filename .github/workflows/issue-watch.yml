@@ -1,0 +1,37 @@
+name: Issue watch
+
+# When the repo owner opens an issue, Claude works on a branch and opens a PR.
+# Issues opened by anyone else, and the existing label backlog, are ignored.
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  fix:
+    if: github.event.issue.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
+
+            ${{ github.event.issue.body }}
+
+            Fix this issue on a new branch named issue-${{ github.event.issue.number }}.
+            Run `npm test` (Node 24) and make sure it passes before you push.
+            Then open a pull request whose description says "Fixes #${{ github.event.issue.number }}".
+            Never merge the pull request and never push to main.
+          claude_args: |
+            --allowedTools "Edit,Write,Bash(git:*),Bash(npm:*),Bash(node:*),Bash(gh pr create:*)"
