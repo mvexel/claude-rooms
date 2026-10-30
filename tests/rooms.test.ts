@@ -454,3 +454,29 @@ test('prune removes a branch merged into the integration branch only, not the ch
   assert.equal(existsSync(`${real}-r-t01`), false)
   assert.equal(git('branch', '--list', 'rooms/r/t01'), '')
 })
+
+test('a worker whose session is waiting for input is not moving: the room is stuck and says so', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'R')
+  s.ok('add', 'r', 'Build', '--owner', 'builder', '--acc', 'works', '--in', 'spec')
+  s.ok('set', 'r', 'T01', 'state=doing', 'agent=abcd1234-0000')
+  const previous = process.env.CLAUDE_ROOMS_HOME
+  process.env.CLAUDE_ROOMS_HOME = s.home
+  const alive = process.pid
+  try {
+    const room = new Room('r')
+    const session = (status: string) => [{ id: 'abcd1234', sessionId: 'abcd1234-0000', pid: alive, status, waitingFor: 'input needed' }]
+    const busy = roomState(room, { sessions: session('busy') })
+    assert.equal(busy.status, 'moving')
+    const st = roomState(room, { sessions: session('waiting') })
+    assert.equal(st.status, 'stuck')
+    assert.deepEqual(st.moving, [])
+    assert.equal(st.sentence, 'T01 worker is waiting for input in session abcd1234.')
+    assert.match(st.warnings.join('\n'), /T01 worker is waiting for input in session abcd1234 \(input needed\)/)
+    const detail = roomDetail(room, st, session('waiting') as never)
+    assert.equal(detail.team.find(m => m.name === 'builder')?.items[0].session_state, 'waiting for input')
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_ROOMS_HOME
+    else process.env.CLAUDE_ROOMS_HOME = previous
+  }
+})

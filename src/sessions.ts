@@ -15,7 +15,8 @@ export type Session = {
   pid?: number
   cwd?: string
   name?: string
-  status?: string // busy | idle | ...
+  status?: string // busy | idle | waiting | ...
+  waitingFor?: string // what a 'waiting' session needs, e.g. 'input needed'
   state?: string
   kind?: string
 }
