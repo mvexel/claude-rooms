@@ -108,6 +108,15 @@ test('install adds the rooms home to the sandbox only on yes; hook check warns u
   assert.doesNotMatch(tracked + untracked, /\.state/)
 })
 
+test("a worker's scratch folder lives in the state dir, inside the rooms home", () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'Room', '--repo', s.home)
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  const r = s.rooms('spawn', 'r', 'T01')
+  assert.match(r.err, /claude --bg failed/)
+  assert.ok(existsSync(join(s.env.CLAUDE_ROOMS_STATE, 'scratch', 'r', 'T01')))
+})
+
 test('one open room per repo per machine; other repos are allowed and paused rooms retain their repo', () => {
   const s = sandbox()
   s.ok('new', 'first', 'First')
