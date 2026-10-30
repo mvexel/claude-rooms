@@ -22,6 +22,14 @@ import { closeRoom, setPaused, setTitle, sweep } from './commands.ts'
 // another checkout beside the real server, on the same rooms.
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+// What the page needs to install as an app, served as is from web/.
+const APP_FILES: { [path: string]: string } = {
+  '/manifest.webmanifest': 'application/manifest+json',
+  '/sw.js': 'text/javascript; charset=utf-8',
+  '/icon.svg': 'image/svg+xml',
+  '/icon-192.png': 'image/png',
+  '/icon-512.png': 'image/png',
+}
 
 const minutes = (stamp: string): number | undefined => {
   const t = Date.parse(stamp)
@@ -287,6 +295,10 @@ export async function serve(o: ServeOptions): Promise<void> {
       const parts = path.split('/').filter(Boolean)
       if (req.method === 'GET') {
         if (path === '/' || path === '/index.html') return send(req, res, 200, readFileSync(join(ROOT, 'web', 'index.html'), 'utf8'), 'text/html')
+        if (APP_FILES[path]) {
+          res.writeHead(200, { 'Content-Type': APP_FILES[path], 'Cache-Control': 'no-cache' })
+          return res.end(readFileSync(join(ROOT, 'web', path)))
+        }
         if (path === '/api/inbox') {
           const all = states()
           const cards: ReturnType<typeof card>[] = []
