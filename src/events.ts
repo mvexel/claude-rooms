@@ -161,7 +161,7 @@ export function dispatch(roomName: string): { route: Route; why: string } {
   })
 }
 
-function turnRunning(room: string): number | undefined {
+export function turnRunning(room: string): number | undefined {
   try {
     const t = JSON.parse(readFileSync(turnFile(room), 'utf8'))
     process.kill(t.pid, 0)
@@ -184,7 +184,8 @@ function startTurn(room: Room, evs: Event[]): void {
   const args = ['-p', '--permission-mode', c.lead.permissionMode]
   if (c.lead.model) args.push('--model', c.lead.model)
   if (c.lead.allowedTools.length) args.push('--allowedTools', c.lead.allowedTools.join(','))
-  args.push(prompt)
+  // `--allowedTools` is variadic and would swallow the prompt without `--`.
+  args.push('--', prompt)
   mkdirSync(roomState(room.name), { recursive: true })
   const log = openSync(join(roomState(room.name), 'turns.log'), 'a')
   appendFileSync(join(roomState(room.name), 'turns.log'), `\n=== ${stamp()} turn for ${evs.map(e => e.id).join(',')}\n`)
