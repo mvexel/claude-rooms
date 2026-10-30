@@ -41,7 +41,7 @@ cp deploy/claude-rooms.service ~/.config/systemd/user/ && systemctl --user enabl
 tailscale serve --bg --set-path /rooms http://127.0.0.1:8787
 ```
 
-Set `ROOMS_USERS` (your Tailscale login) in the unit before you expose it: only those logins can answer. The server refuses to listen beyond loopback without it.
+Set `ROOMS_USERS` (your Tailscale login) in the unit before you expose it: only those logins can answer. The server refuses to listen beyond loopback without it. If `node` comes from a version manager, check that the unit's `PATH` reaches it (`journalctl --user -u claude-rooms` shows `node: No such file or directory` if not). After updating the plugin or the clone, `systemctl --user restart claude-rooms` loads the new code.
 
 Optional: `git -C ~/rooms remote add origin <private repo>`. Commits are then mirrored in the background. Nothing waits on a push.
 
