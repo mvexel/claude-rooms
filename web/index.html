@@ -979,7 +979,7 @@ function roomView(name) {
   if (waiting.length) work.append(sec("Waiting", waiting.length), itemRows(name, waiting, i => [i.owner_name, i.waits_on ? "waits on " + i.waits_on : i.after?.length ? "after " + i.after.join(", ") : ""].filter(Boolean).join(" · ")));
   if (onYou.length) work.append(sec("Blocked on you", onYou.length), itemRows(name, onYou, i => i.owner_name || ""));
   if (r.team?.length || r.team_roster) {
-    const assigned = (r.team || []).filter(m => m.name !== "Unassigned");
+    const assigned = (r.team || []).filter(m => m.name !== "Unassigned"), tasks = (r.team || []).reduce((n, m) => n + m.items.length, 0);
     const open = ui.openTeam.has(name), bodyId = "team-" + name;
     const body = h("div", { id: bodyId, hidden: !open, class: "team-body" });
     const labels = { doing: "Moving", review: "In review", blocked: "Blocked", todo: "Queued" };
@@ -992,9 +992,10 @@ function roomView(name) {
       const next = body.hidden; body.hidden = !next;
       if (next) ui.openTeam.add(name); else ui.openTeam.delete(name);
       toggle.setAttribute("aria-expanded", String(next)); toggle.querySelector(".chev").textContent = next ? "⌄" : "›";
-    } }, h("span", { class: "tt" }, h("b", {}, "Team"), h("small", {}, assigned.length ? assigned.map(m => m.name).join(" · ") : "Work awaiting an owner")),
+    } }, h("span", { class: "tt" }, h("b", {}, assigned.length ? assigned.map(m => m.name).join(" · ") : "Work awaiting an owner"), h("small", {}, `${tasks} open assignment${tasks === 1 ? "" : "s"}`)),
       h("span", { class: "chev", "aria-hidden": "true" }, open ? "⌄" : "›"));
-    team.append(h("section", { class: "plan", "aria-label": "Team and assignments" }, toggle, body));
+    // A section label like the work column's, so the two columns' cards line up.
+    team.append(sec("Team", assigned.length), h("section", { class: "plan", style: "margin-top:0", "aria-label": "Team and assignments" }, toggle, body));
   }
   if (w.done_count) team.append(h("p", { class: "small", style: "margin:8px 2px" }, `${w.done_count} item${w.done_count > 1 ? "s" : ""} done`));
   if ((r.decided || []).length) dec.append(sec("Decided recently", r.decided.length), h("div", { class: "items" }, r.decided.map(d => h("button", { class: "it", onclick: () => openRecord(name, d.id) },
