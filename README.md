@@ -124,7 +124,7 @@ The design, and the reasoning behind it, are in [docs/design.md](docs/design.md)
 
 ### Issue watch
 
-`.github/workflows/issue-watch.yml` runs when the repo owner opens an issue: Claude fixes it on a branch, runs `npm test` on Node 24 and opens a PR that says `Fixes #n`. It never merges. Issues from anyone else, and issues labeled `backlog`, are skipped. Add an `ANTHROPIC_API_KEY` repository secret (Settings, Secrets and variables, Actions) for it to work.
+`.github/workflows/issue-watch.yml` runs when the repo owner opens an issue: Claude fixes it on a branch, runs `npm test` on Node 24 and opens a PR that says `Fixes #n`. It never merges. Issues from anyone else, and issues labeled `backlog`, are skipped. It runs on a Claude subscription: create a token with `claude setup-token` and store it as the `CLAUDE_CODE_OAUTH_TOKEN` repository secret.
 
 ## License
 
