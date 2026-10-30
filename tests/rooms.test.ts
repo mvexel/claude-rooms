@@ -108,6 +108,21 @@ test('install adds the rooms home to the sandbox only on yes; hook check warns u
   assert.doesNotMatch(tracked + untracked, /\.state/)
 })
 
+test('events an older process left in the old state dir are carried into the new one', () => {
+  const s = sandbox()
+  const base = resolve(s.home, '..')
+  const env: { [k: string]: string | undefined } = { ...s.env, HOME: base }
+  delete env.CLAUDE_ROOMS_STATE
+  const old = join(base, '.local', 'state', 'claude-rooms', 'rooms', 'r')
+  mkdirSync(old, { recursive: true })
+  mkdirSync(join(s.home, '.state', 'rooms', 'r'), { recursive: true })
+  writeFileSync(join(s.home, '.state', 'rooms', 'r', 'inbox.jsonl'), '{"id":"a","text":"new"}\n')
+  writeFileSync(join(old, 'inbox.jsonl'), '{"id":"b","text":"stranded"}\n')
+  spawnSync(process.execPath, ['--no-warnings', CLI, 'help'], { env, encoding: 'utf8' })
+  assert.equal(readFileSync(join(s.home, '.state', 'rooms', 'r', 'inbox.jsonl'), 'utf8'), '{"id":"a","text":"new"}\n{"id":"b","text":"stranded"}\n')
+  assert.equal(existsSync(join(old, 'inbox.jsonl')), false)
+})
+
 test("a worker's scratch folder lives in the state dir, inside the rooms home", () => {
   const s = sandbox()
   s.ok('new', 'r', 'Room', '--repo', s.home)
