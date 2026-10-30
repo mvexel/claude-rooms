@@ -1,14 +1,14 @@
 name: Issue watch
 
 # When the repo owner opens an issue, Claude works on a branch and opens a PR.
-# Issues opened by anyone else, and the existing label backlog, are ignored.
+# Issues opened by anyone else, and issues labeled "backlog", are ignored.
 on:
   issues:
     types: [opened]
 
 jobs:
   fix:
-    if: github.event.issue.user.login == github.repository_owner
+    if: github.event.issue.user.login == github.repository_owner && !contains(github.event.issue.labels.*.name, 'backlog')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -22,6 +22,8 @@ jobs:
         with:
           node-version: 24
       - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
