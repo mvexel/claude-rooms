@@ -1,7 +1,7 @@
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
 import { type Session, findSession, isRunning, listSessions } from './sessions.ts'
-import { leaseFresh, pending } from './events.ts'
+import { leaseFresh, pending, turnRunning } from './events.ts'
 
 // One status per room, decided here and nowhere else. For the owner it is a
 // sentence and at most one action; for the lead, the same plus warnings.
@@ -153,7 +153,7 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
 
   const lead = findSession(room.leadSession(), sessions)
   const leadLive = !!lead && isRunning(lead)
-  const leadWorking = !opts.yielding && leadLive && lead!.status !== 'idle'
+  const leadWorking = !opts.yielding && ((leadLive && lead!.status !== 'idle') || !!turnRunning(room.name))
   const heldEvents = waitingEvents.length > 0 && !leaseFresh(room) && leadLive
   const stuckWhy =
     heldEvents
