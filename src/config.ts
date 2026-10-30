@@ -16,6 +16,12 @@ export function stateDir(): string {
   return process.env.CLAUDE_ROOMS_STATE || join(roomsHome(), '.state')
 }
 
+// A worker's scratch folder. Under the state dir, so the one sandbox entry
+// for the rooms home covers it and git never sees it.
+export function scratchDir(room: string, id: string): string {
+  return join(stateDir(), 'scratch', room, id)
+}
+
 // Where state lived before 0.3; `rooms init` moves it.
 export const legacyStateDir = () => join(homedir(), '.local', 'state', 'claude-rooms')
 

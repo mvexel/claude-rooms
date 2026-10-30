@@ -4,8 +4,8 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { applyDueDefaults, recordAnswer } from './answer.ts'
-import { claudeBin, config, legacyStateDir, roomsHome, stateDir } from './config.ts'
-import { autocommit, commit, excludeLocal, git, pushInBackground, withLock } from './git.ts'
+import { claudeBin, config, legacyStateDir, roomsHome, scratchDir, stateDir } from './config.ts'
+import { autocommit, commit, excludeLocal, git, pushInBackground, unwritable, withLock } from './git.ts'
 import { applyUserSandbox, planUserSandbox, sandboxGap } from './sandbox.ts'
 import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
 import { Record, hhmm, now } from './record.ts'
@@ -414,7 +414,7 @@ function cmdDone(a: Args): string {
   it.set('state', state)
   logLine(it, by(), `set state=${state}`)
   it.save()
-  const scratch = join(homedir(), '.cache', 'claude-rooms', 'scratch', r.name, id)
+  const scratch = scratchDir(r.name, id)
   if (existsSync(scratch)) rmSync(scratch, { recursive: true, force: true })
   changed(r, `${id} ${state}`)
   const told = tellLead(r, `${id} (${it.get('title')}) is ${state}, by ${by()}. Next: ${next}. Read its Result and take the next step.`)
@@ -658,8 +658,12 @@ function cmdSpawn(a: Args): string {
     }
     it.appendTo('Inputs', `- Worktree: ${cwd} (branch ${branch} from ${base})`)
   }
-  const scratch = join(homedir(), '.cache', 'claude-rooms', 'scratch', r.name, id)
-  mkdirSync(scratch, { recursive: true })
+  const scratch = scratchDir(r.name, id)
+  try {
+    mkdirSync(scratch, { recursive: true })
+  } catch (e) {
+    fail(unwritable(scratch, e as Error))
+  }
   const who = flag(a, 'name') || it.get('owner') || 'worker'
   const prompt = [
     `You are ${who} on item ${id} (${it.get('title')}) in room ${r.name}. Load the rooms:worker skill first.`,
