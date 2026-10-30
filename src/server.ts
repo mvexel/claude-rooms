@@ -18,6 +18,8 @@ import { setPaused, sweep } from './commands.ts'
 // the Tailscale-User-Login, unless the server listens on loopback only and
 // ROOMS_USERS is unset. Writes return 202 at once: commits and pushes happen
 // in the sweep, and the lead hears through the room's events.
+// ROOMS_READONLY=1 serves the page only, no sweep and no writes: a preview of
+// another checkout beside the real server, on the same rooms.
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -252,7 +254,8 @@ export async function serve(o: ServeOptions): Promise<void> {
   const users = (process.env.ROOMS_USERS ?? '').split(',').map(s => s.trim()).filter(Boolean)
   const loopback = ['127.0.0.1', 'localhost', '::1'].includes(o.host)
   if (!users.length && !loopback) throw new Error('refusing to listen beyond loopback without ROOMS_USERS (the tailnet logins allowed to answer)')
-  const allowed = (req: IncomingMessage) => !users.length || users.includes(String(req.headers['tailscale-user-login'] ?? ''))
+  const readonly = process.env.ROOMS_READONLY === '1'
+  const allowed = (req: IncomingMessage) => !readonly && (!users.length || users.includes(String(req.headers['tailscale-user-login'] ?? '')))
 
   let sessions: Session[] = listSessions()
   let sessionsAt = Date.now()
@@ -263,7 +266,7 @@ export async function serve(o: ServeOptions): Promise<void> {
     }
     return sessions
   }
-  setInterval(() => {
+  if (!readonly) setInterval(() => {
     try {
       for (const line of sweep()) console.log(new Date().toISOString().slice(11, 19), line)
     } catch (e) {
@@ -374,7 +377,7 @@ export async function serve(o: ServeOptions): Promise<void> {
     }
   })
   await new Promise<void>(r => server.listen(o.port, o.host, r))
-  console.log(`rooms page on http://${o.host}:${o.port}/ (rooms: ${roomsHome()})`)
+  console.log(`rooms page on http://${o.host}:${o.port}/ (rooms: ${roomsHome()})${readonly ? ', read-only' : ''}`)
   await new Promise(() => {})
 }
 
