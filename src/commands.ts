@@ -13,7 +13,8 @@ import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
 import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession } from './sessions.ts'
 import { isHuman, roomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
-import { repositoryIdentity, repositoryRoot } from './repositories.ts'
+import { repositoryIdentity, repositoryRoot, workerWorktree } from './repositories.ts'
+import { pruneCandidates, pruneRoom } from './prune.ts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -586,7 +587,12 @@ export function closeRoom(r: Room, reason: string, force = false): string {
   b.save()
   commit(r.name, `${r.name}: closed`)
   pushInBackground()
-  return `${r.name} closed`
+  const left = pruneCandidates(r).filter(e => e.remove).length
+  return `${r.name} closed${left ? `\n${left} worktree/branch of finished items can go: rooms prune ${r.name} --yes` : ''}`
+}
+
+function cmdPrune(a: Args): string {
+  return pruneRoom(room(a._[0]), has(a, 'yes'))
 }
 
 export function setTitle(r: Room, title: string): string {
@@ -683,10 +689,12 @@ function cmdSpawn(a: Args): string {
   // One worktree per agent: the item's own branch off the integration branch.
   let cwd = flag(a, 'cwd') || process.cwd()
   const repo = flag(a, 'repo')
-  if (repo) {
+  // Research items read; they get no worktree.
+  if (repo && it.get('kind') !== 'research') {
     const base = flag(a, 'base') || r.brief.get('code').split(' ')[0] || 'HEAD'
-    cwd = `${resolve(repo)}-${r.name}-${id.toLowerCase()}`
-    const branch = `rooms/${r.name}/${id.toLowerCase()}`
+    const wt = workerWorktree(repo, r.name, id)
+    cwd = wt.path
+    const branch = wt.branch
     if (!existsSync(cwd)) {
       const w = spawnSync('git', ['-C', repo, 'worktree', 'add', cwd, '-b', branch, base], { encoding: 'utf8' })
       if (w.status !== 0) fail(`git worktree add failed: ${w.stderr.trim()}`)
@@ -875,6 +883,7 @@ Lead
   rooms statusline [room]                         compact status; accepts Claude status-line JSON on stdin
   rooms brief <room>                                 the binding set: PRD + agreed refinements
   rooms set <room> <id> key=value... [--force] | pause|resume <room> | close <room> "reason"
+  rooms prune <room> [--yes]                         list worktrees/branches of done or dropped items; --yes removes the merged ones
   rooms lead [<room> [session]]                      make this session the lead; no room: the open room for this repo.
                                                      The previous lead is told to hand off.
   rooms tell <room> "msg" [--item Tnn]               message the lead (or a worker, via its item Log)
@@ -945,6 +954,8 @@ export async function run(argv: string[]): Promise<{ text: string; code: number 
       return ok(setPaused(room(a._[0]), false))
     case 'close':
       return ok(cmdClose(a))
+    case 'prune':
+      return ok(cmdPrune(a))
     case 'lead':
       return ok(cmdLead(a))
     case 'chat':
