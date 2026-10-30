@@ -57,8 +57,9 @@ export function pruneRoom(r: Room, yes: boolean): string {
       const w = git(e.repo, 'worktree', 'remove', e.worktree)
       if (!w.ok) return `failed ${what}: git worktree remove`
     }
-    const b = git(e.repo, 'branch', '-d', e.branch)
-    return b.ok ? `removed ${what}` : `failed ${what}: git branch -d`
+    // -D: merged into the integration branch is not merged into the checkout's HEAD, and -d would refuse. The ancestor check above is the guard.
+    const b = git(e.repo, 'branch', '-D', e.branch)
+    return b.ok ? `removed ${what}` : `failed ${what}: git branch -D`
   })
   const n = list.filter(e => e.remove).length
   if (!yes && n) lines.push(`${n} removable; run: rooms prune ${r.name} --yes`)
