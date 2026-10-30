@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { LEASE_FRESH_MS, claudeBin, config, roomsHome, stateDir } from './config.ts'
 import { withLock } from './git.ts'
 import { Room } from './room.ts'
-import { findSession, isRunning, listSessions, resumeStopped } from './sessions.ts'
+import { findSession, isEnded, isRunning, liveness, listSessions, resumeStopped } from './sessions.ts'
 
 // Events: everything the lead must hear (a tap, a worker done, a need) is
 // appended to the room's inbox. Who reads it:
@@ -152,7 +152,9 @@ export function dispatch(roomName: string): { route: Route; why: string } {
       const sessions = listSessions()
       if (!sessions.length) return { route: 'held' as Route, why: 'session list unavailable; not guessing' }
       const s = findSession(lead, sessions)
-      if (s && isRunning(s)) return { route: 'held' as Route, why: `lead session ${s.id} is running but not checking in; install the plugin there, or restart rooms serve if it predates the plugin` }
+      const live = liveness(lead, sessions)
+      if (live === 'unknown') return { route: 'held' as Route, why: `lead session ${lead} liveness unknown; not starting a second lead` }
+      if (live === 'alive') return { route: 'held' as Route, why: `lead session ${s?.id ?? lead} is running but not checking in; install the plugin there, or restart rooms serve if it predates the plugin` }
     }
     const taken = take(roomName)
     if (!taken.length) return { route: 'empty' as Route, why: '' }
@@ -215,7 +217,8 @@ export function tellWorker(room: Room, itemId: string, agent: string, text: stri
   const sessions = listSessions()
   const s = sessions.length ? findSession(agent, sessions) : undefined
   if (!s) return 'held: the worker session is unknown'
-  if (isRunning(s)) return 'held: the worker session runs without the rooms plugin'
+  if (isRunning(s, sessions)) return 'held: the worker session runs without the rooms plugin'
+  if (!isEnded(s, sessions)) return 'held: the worker session liveness is unknown'
   const evs = take(key)
   try {
     resumeStopped(s, render(key, evs), sessions)

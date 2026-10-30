@@ -1,6 +1,6 @@
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
-import { type Session, findSession, isRunning, listSessions } from './sessions.ts'
+import { type Session, findSession, isEnded, isRunning, listSessions, liveness } from './sessions.ts'
 import { leaseFresh, pending, turnRunning } from './events.ts'
 
 // One status per room, decided here and nowhere else. For the owner it is a
@@ -99,6 +99,7 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
   const warnings: string[] = []
   const moving: string[] = []
   const finishedQuiet: string[] = []
+  const unknownLive: string[] = []
 
   for (const it of items) {
     const id = it.get('id')
@@ -106,10 +107,15 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
     if (!OPEN_ITEM.has(st)) continue
     if (st === 'doing') {
       const s = it.get('agent') ? findSession(it.get('agent'), sessions) : undefined
-      if (s && isRunning(s) && s.status !== 'idle') moving.push(id)
-      else if (s && isRunning(s)) {
+      const agent = it.get('agent')
+      const alive = !!agent && isRunning(s ?? agent, sessions)
+      if (alive && s?.status !== 'idle') moving.push(id)
+      else if (alive) {
         finishedQuiet.push(id)
         warnings.push(`${id} doing, but its worker is idle: read its result or tell it what is missing`)
+      } else if (agent && !isEnded(s ?? agent, sessions)) {
+        unknownLive.push(id)
+        warnings.push(`${id} doing, worker liveness unknown (sessions hidden from this process, e.g. by a sandbox); not treating it as ended`)
       } else if (it.get('agent')) {
         finishedQuiet.push(id)
         warnings.push(`${id} doing, but its worker session ended`)
@@ -152,11 +158,12 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
   }
 
   const lead = findSession(room.leadSession(), sessions)
-  const leadLive = !!lead && isRunning(lead)
-  const leadWorking = !opts.yielding && ((leadLive && lead!.status !== 'idle') || !!turnRunning(room.name))
+  const leadLive = isRunning(lead ?? room.leadSession(), sessions)
+  const leadWorking = !opts.yielding && ((leadLive && lead?.status !== 'idle') || !!turnRunning(room.name))
   const heldEvents = waitingEvents.length > 0 && !leaseFresh(room) && leadLive
+  const leadUnknown = !!room.leadSession() && !leadLive && !isEnded(lead ?? room.leadSession(), sessions)
   const stuckWhy =
-    heldEvents
+    unknownLive.length || leadUnknown ? '' : heldEvents
       ? `${plural(waitingEvents.length, 'update')} for the lead can't reach it: its session is open but not checking in (no rooms plugin there, or rooms serve is older than the plugin: restart it).`
       : !moving.length && !leadWorking && finishedQuiet.length
         ? `${finishedQuiet.join(', ')} finished without reporting back, and nothing else is running.`

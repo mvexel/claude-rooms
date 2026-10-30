@@ -10,7 +10,7 @@ import { applyUserSandbox, planUserSandbox, sandboxGap } from './sandbox.ts'
 import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
-import { currentSessionId, findSession, isRunning, listSessions, startSession } from './sessions.ts'
+import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession } from './sessions.ts'
 import { isHuman, roomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
 import { repositoryIdentity, repositoryRoot } from './repositories.ts'
@@ -670,8 +670,10 @@ function cmdSpawn(a: Args): string {
   }
   const it = r.find(id ?? fail('usage: rooms spawn <room> <Tnn> [--tier light|standard|review] [--repo <path> [--base <branch>]] | --lead'))
   if (it.get('agent')) {
-    const s = findSession(it.get('agent'))
-    if (s && isRunning(s)) fail(`${id} already has a live worker (${s.id}); send it a message with rooms tell instead`)
+    const sessions = listSessions()
+    const s = findSession(it.get('agent'), sessions)
+    if (isRunning(s ?? it.get('agent'), sessions)) fail(`${id} already has a live worker (${s?.id ?? it.get('agent')}); send it a message with rooms tell instead`)
+    if (!isEnded(s ?? it.get('agent'), sessions) && !has(a, 'force')) fail(`${id}'s worker session ${it.get('agent')} may be alive (liveness unknown: sandboxed or session list unavailable); run from outside the sandbox, or --force once you know it ended`)
   }
   const warns = guardStart(r, it, has(a, 'force'))
   const tierName = flag(a, 'tier') || it.get('tier') || c.worker.tier
@@ -756,8 +758,11 @@ function cmdChat(a: Args): string {
   const r = room(a._[0])
   const lead = r.leadSession()
   if (!lead) fail(`${r.name} has no lead session; start one with rooms spawn ${r.name} --lead, or run rooms lead ${r.name} from a session`)
-  const s = findSession(lead)
-  const args = s && isRunning(s) ? ['attach', s.id] : ['--resume', lead]
+  const sessions = listSessions()
+  const s = findSession(lead, sessions)
+  const live = liveness(lead, sessions)
+  if (live === 'unknown') fail(`lead session ${lead} liveness unknown (sandboxed?); not resuming, which could fork it`)
+  const args = live === 'alive' && s ? ['attach', s.id] : ['--resume', lead]
   spawnSync(claudeBin(), args, { cwd: roomsHome(), stdio: 'inherit' })
   return ''
 }
