@@ -291,6 +291,10 @@ export async function serve(o: ServeOptions): Promise<void> {
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://x')
+      if (req.method === 'GET' && /^\/(rooms|tracker)$/.test(url.pathname)) {
+        res.writeHead(308, { Location: url.pathname + '/' + url.search })
+        return res.end()
+      }
       const path = url.pathname.replace(/^\/(tracker|rooms)(?=\/|$)/, '') || '/'
       const parts = path.split('/').filter(Boolean)
       if (req.method === 'GET') {

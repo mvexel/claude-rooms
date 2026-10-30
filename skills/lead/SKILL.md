@@ -13,7 +13,7 @@ The CLI enforces most of the rules: the build lock, the brief, the Result, who g
 
 ## Starting a room
 
-1. `rooms new <room> "<Title>"`. Add `--feature` when you build something for users: that adds `PRD.md` and locks building until the owner agrees it. Fixes, migrations, research and chores get no PRD.
+1. `rooms new <room> "<Title>" --repo <path>`. Only one room per repository may be open on a machine; different repositories can each have their own room. The repo defaults to the current checkout; repeat `--repo` if the room spans several repos. Pausing does not free a repo's slot, and linked worktrees count as the same repo. Add `--feature` when you build something for users: that adds `PRD.md` and locks building until the owner agrees it. Fixes, migrations, research and chores get no PRD.
 2. **Bring up the page before the first card.** The owner answers there, and `rooms serve` also runs the sweep that delivers events and commits. If the `claude-rooms` user service is active, use it. Otherwise run `ROOMS_USERS=<owner's tailnet login> rooms serve --port <free port> --host 127.0.0.1` in the background. Pick a port that `ss -ltn` shows free, because 8787 may belong to another tool. If the machine is on a tailnet (`tailscale status` works), serve the page there: `tailscale serve --bg --set-path /rooms http://127.0.0.1:<port>`. `ROOMS_USERS` must be set before you do. Without it, a loopback server accepts every write, and the tailnet would reach it. Put the page URL under "Where things are" in `BRIEF.md` and in your first reply to the owner.
 3. Fill in `BRIEF.md`: goal, scope, the `## Team` charters (role, model tier, what it owns and doesn't), and where the code is (`code: <branch> at <worktree>`). One session leads one room. A new project gets a new room and a new session.
 4. Write each framing assumption as a premise: `rooms ask <room> "<assumption, in the owner's words if they gave them>" --premise`. Wait for a yes on any you inferred.
@@ -45,6 +45,10 @@ Ask only what is the owner's to decide. The CLI routes each kind:
 | A reversible engineering choice | decide it yourself, or `--decider <role>`; write it down as a D if it affects another role | nothing |
 | Something only the owner can do | `--todo --steps "<exact commands, never a secret>"` | a task with a Done button |
 | Free-text answer needed | `--text` | a text box |
+
+Use `--text` for observations, ride reports, explanations and other prose answers,
+even when only the owner can supply them. Reserve `--todo --steps` for an action
+whose completion the owner confirms. Todo cards also accept a note with Done.
 
 - Options are short (under 80 characters, five at most). Reasoning goes in `--why`. Always give your pick and the reason for it.
 - Fill in `--blocks` so the card sorts by what it holds up.

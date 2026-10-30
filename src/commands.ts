@@ -5,13 +5,14 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { applyDueDefaults, recordAnswer } from './answer.ts'
 import { claudeBin, config, roomsHome } from './config.ts'
-import { autocommit, commit, git, pushInBackground } from './git.ts'
+import { autocommit, commit, git, pushInBackground, withLock } from './git.ts'
 import { beat, dispatch, emit, render, take, tellWorker } from './events.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
 import { currentSessionId, findSession, isRunning, listSessions, startSession } from './sessions.ts'
 import { isHuman, roomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
+import { repositoryIdentity, repositoryRoot } from './repositories.ts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -106,18 +107,33 @@ function cmdInstall(): string {
 // ---- rooms and records -----------------------------------------------------
 
 function cmdNew(a: Args): string {
+  return withLock('room-create', () => createRoom(a))
+}
+
+function createRoom(a: Args): string {
   const [name, title] = a._
-  if (!name || !title) fail('usage: rooms new <room> "<Title>" [--feature] [--session <lead session id>]')
+  if (!name || !title) fail('usage: rooms new <room> "<Title>" [--repo <path>] [--feature] [--session <lead session id>]')
   const r = new Room(name)
   if (r.exists()) fail(`room ${name} exists`)
   const lead = flag(a, 'session') || currentSessionId() || ''
-  const other = lead && Room.all().find(x => x.leadSession() === lead && !x.isClosed())
-  if (other) fail(`refused: this session already leads ${other.name}. One session leads one room; start a new session for a new room.`)
+  const repos = [...new Set((many(a, 'repo').length ? many(a, 'repo') : [process.cwd()]).map(repositoryRoot))]
+  const identities = new Set(repos.map(repositoryIdentity))
+  const open = Room.all().filter(x => !x.isClosed())
+  for (const other of open) {
+    for (const repo of other.brief.list('repos')) {
+      // Records may refer to a repo on a disk that is not currently mounted.
+      let identity: string
+      try { identity = repositoryIdentity(repo) } catch { identity = resolve(repo) }
+      if (identities.has(identity)) fail(`refused: ${other.name} is still open for repo ${repo} on this machine. Only one room per repo may be open; finish and close it before starting another.`)
+    }
+  }
+  const otherLead = lead && open.find(x => x.leadSession() === lead)
+  if (otherLead) fail(`refused: this session already leads ${otherLead.name}. One session leads one room; start a new session for a new room.`)
   for (const d of ['items', 'decisions', 'notes']) mkdirSync(join(r.dir, d), { recursive: true })
   const brief = new Record(join(r.dir, 'BRIEF.md'), '---\n---\n')
   for (const [k, v] of [
     ['title', title],
-    ['repos', '[]'],
+    ['repos', repos],
     ['lead_session', lead],
     ['sessions', '[]'],
     ['code', ''],
@@ -711,7 +727,7 @@ function cmdHook(a: Args): string {
 export const HELP = `rooms: agent team rooms for Claude Code. Records: ${'$'}CLAUDE_ROOMS_HOME (default ~/rooms)
 
 Lead
-  rooms new <room> "<Title>" [--feature]             a room; --feature adds a PRD draft and locks building
+  rooms new <room> "<Title>" [--repo <path>] [--feature]  one open room per repo on this machine; repo defaults to cwd
   rooms add <room> "<title>" --acc "..." --in "..." [--dep T01,T02] [--cap 2] [--owner role] [--tier light|standard|review] [--research]
   rooms ask <room> "<Question?>" -o "..." -o "..." [--pick b --pick-reason "..."] [--blocks T03] [--why "..."]
         [--door one]                                 hard to undo: a card for the owner

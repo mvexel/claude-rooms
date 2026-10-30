@@ -303,7 +303,7 @@ dialog::backdrop { background:rgba(0,0,0,.4); }
 // with a local undo window, then POSTed; receipts follow delivery to the lead.
 // API shapes: docs in the redesign spec, section 8.
 
-const BASE = location.pathname.replace(/[^/]*$/, "");
+const BASE = /^\/(rooms|tracker)$/.test(location.pathname) ? location.pathname + "/" : location.pathname.replace(/[^/]*$/, "");
 const api = p => BASE + "api/" + p;
 if (typeof navigator === "object" && "serviceWorker" in navigator) navigator.serviceWorker.register(BASE + "sw.js").catch(() => {});
 const POLL_MS = 20000;
@@ -386,8 +386,6 @@ addEventListener("online", refresh);
 // Don't redraw under the finger: while typing in the page, defer.
 let dirty = false;
 function safeRender() {
-  const a = document.activeElement;
-  if (a && $("#app").contains(a) && /^(TEXTAREA|INPUT)$/.test(a.tagName)) { dirty = true; return; }
   render();
 }
 document.addEventListener("focusout", () => setTimeout(() => { if (dirty) { dirty = false; safeRender(); } }, 0));
@@ -396,12 +394,17 @@ document.addEventListener("focusout", () => setTimeout(() => { if (dirty) { dirt
 const routes = () => (location.hash.slice(1) || "/").split("/").filter(Boolean).map(decodeURIComponent);
 addEventListener("hashchange", async () => {
   const [a, b, c] = routes();
-  if (a === "room" && b && !S.detail[b]) { render(); try { S.detail[b] = await getJSON("rooms/" + encodeURIComponent(b)); } catch (e) { toast("Couldn't load the room: " + e.message); } }
-  render(); scrollTo(0, 0);
+  if (a === "room" && b && !S.detail[b]) { render(true); try { S.detail[b] = await getJSON("rooms/" + encodeURIComponent(b)); } catch (e) { toast("Couldn't load the room: " + e.message); } }
+  render(true); scrollTo(0, 0);
   if (a === "card" && b && c) openRecord(b, c);
 });
-function render() {
+function render(navigating = false) {
   const [a, b] = routes(), app = $("#app");
+  // Every background update shares this gate, including receipt timers and
+  // answers sent on another card. Keep the actual editor node and viewport.
+  const active = document.activeElement;
+  if (!navigating && active && app.contains(active) && /^(TEXTAREA|INPUT)$/.test(active.tagName)) { dirty = true; return; }
+  dirty = false;
   const off = $("#offline");
   off.hidden = !S.offline;
   if (S.offline) off.textContent = S.loadedAt ? `Offline. Showing ${hhmm(S.loadedAt)} data. Retrying.` : `Can't reach the rooms server (${S.error}). Retrying.`;
@@ -603,8 +606,8 @@ function todoBody(c, locked) {
     s.copy ? h("button", { class: "copy", onclick: e => copy(s.copy, e.target) }, "Copy") : s.url ? h("a", { class: "copy", href: s.url, target: "_blank", rel: "noopener", style: "display:inline-grid;place-items:center;text-decoration:none" }, "Open") : null)));
   const doneOpt = (c.options || [])[0] || { key: "a", label: "Done, I did this" };
   const notYet = (c.options || [])[1];
-  return h("div", {}, list, h("div", { class: "row2" },
-    h("button", { class: "primary", disabled: locked || null, onclick: () => choose(c, doneOpt) }, steps.length && done.size === steps.length ? "Done ✓" : "Done"),
+  return h("div", {}, list, noteBox(c), h("div", { class: "row2" },
+    h("button", { class: "primary", disabled: locked || null, onclick: () => choose(c, doneOpt) }, ui.notes[k] ? "Send note + done" : steps.length && done.size === steps.length ? "Done ✓" : "Done"),
     h("button", { class: "secondary", onclick: () => notYet ? openNotYet(c, notYet) : openAsk(c, "Can't do this yet because ") }, "Can't yet…")));
 }
 function askBody(c, locked) {

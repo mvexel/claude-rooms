@@ -32,6 +32,10 @@ Then install the plugin so every session has the skills and hooks. At a Claude C
 /plugin install rooms@mvexel-rooms
 ```
 
+Room role instructions are added as context when a prompt is submitted. This works
+with Claude Code's built-in `cc-plugin-sec-default` guard on managed machines and
+Team/Enterprise accounts; Rooms does not need to modify the system prompt.
+
 On a machine without the clone, add the marketplace from GitHub instead: `/plugin marketplace add mvexel/claude-rooms`. The repo is private, so that machine needs a GitHub credential that can read it (`gh auth login`, then `gh auth setup-git`).
 
 The page server runs as a user service (`deploy/claude-rooms.service`). To reach it from your phone over the tailnet:
@@ -48,6 +52,11 @@ Optional: `git -C ~/rooms remote add origin <private repo>`. Commits are then mi
 ## Where it runs
 
 Rooms run on one machine: the lead and worker sessions, the records in `~/rooms`, and `rooms serve` (the page, plus the sweep that delivers events and commits). Choose either setup:
+
+Only one room per repository may be open on a machine. Different repositories
+can each have an open room. Use `rooms new <room> "<Title>" --repo <path>`;
+the repository defaults to the current checkout. Paused rooms retain their slot,
+and linked worktrees count as the same repository. Closed rooms remain as history.
 
 - **Locally**, on your laptop. This is fine for a room you watch while you work. While the laptop sleeps, workers pause and the page can't be reached. Events wait in the inbox and are delivered on wake.
 - **On an always-on host**, like a headless box on your tailnet. Rooms keep moving while you're away.

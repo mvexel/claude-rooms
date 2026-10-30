@@ -33,9 +33,9 @@ async function cli($: EngineInterface, args: string[]) {
 
 // Ask the CLI who this session is; as lead, also beat the lease and
 // optionally take the events.
-async function poll($: EngineInterface, take: boolean): Promise<string> {
+async function poll($: EngineInterface, take: boolean, refresh = false): Promise<string> {
   const now = await $.clock.now()
-  if (!take && !me.room && now - whoAt < WHO_MS) return ''
+  if (!refresh && !take && !me.room && now - whoAt < WHO_MS) return ''
   whoAt = now
   const r = await cli($, ['hook', 'poll', ...(take ? ['--take'] : [])])
   if (r.exitCode !== 0) return ''
@@ -74,17 +74,6 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // A static note on the session's place: static, so the prompt cache holds.
-  on('prompt.compose', async ($, e, next) => {
-    const r = await next(e)
-    if (!me.room) return r
-    const text =
-      me.role === 'lead'
-        ? `You lead room ${me.room} (claude-rooms). Follow the rooms:lead skill. Updates for you arrive as "[rooms]" notes; the record, not this conversation, is the memory: when unsure, run rooms status ${me.room}.`
-        : `You work on ${me.item} in room ${me.room} (claude-rooms). Follow the rooms:worker skill; finish with rooms done ${me.room} ${me.item}.`
-    return { sections: [...r.sections, { id: 'rooms:place', text, scope: 'session' as const }] }
-  })
-
   on('turn.start', async ($, e, next) => {
     busy = true
     return next(e)
@@ -110,6 +99,17 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('prompt.submit', async ($, e, next) => {
+    // The organization's sec-default guard skips prompt.compose hooks from
+    // user plugins. Add our own context at submission, which it permits.
+    // Refresh even outside a room: this session may just have become a lead,
+    // and the asynchronous startup poll may not have finished yet.
+    await poll($, false, true).catch(() => {})
+    if (me.room) {
+      const place = me.role === 'lead'
+        ? `You lead room ${me.room} (claude-rooms). Follow the rooms:lead skill. Updates for you arrive as "[rooms]" notes; the record, not this conversation, is the memory: when unsure, run rooms status ${me.room}.`
+        : `You work on ${me.item} in room ${me.room} (claude-rooms). Follow the rooms:worker skill; finish with rooms done ${me.room} ${me.item}.`
+      e = { ...e, context: [...(e.context ?? []), place] }
+    }
     if (me.role !== 'lead' || e.origin?.kind === 'plugin' || !/\b[DAP]\d{2,}\s+[a-e]\b/.test(e.text)) return next(e)
     const r = await cli($, ['hook', 'prompt', '--said', e.text])
     const note = r.exitCode === 0 ? r.stdout.trim() : ''

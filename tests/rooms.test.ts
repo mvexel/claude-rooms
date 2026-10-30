@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Record } from '../src/record.ts'
@@ -55,6 +55,64 @@ test('records round-trip older files, inline comments included', () => {
   r.set('state', 'review')
   assert.match(r.toString(), /^state: review            # todo \| doing$/m)
   assert.equal(new Record('/dev/null', '---\n---\nbody').preamble, 'body')
+})
+
+test('one open room per repo per machine; other repos are allowed and paused rooms retain their repo', () => {
+  const s = sandbox()
+  s.ok('new', 'first', 'First')
+  const rejected = s.rooms('new', 'second', 'Second', '--session', 'another-lead')
+  assert.notEqual(rejected.code, 0)
+  assert.match(rejected.err, /first is still open for repo.*Only one room per repo/)
+  const otherRepo = join(s.home, 'other-project')
+  mkdirSync(otherRepo)
+  s.ok('new', 'other', 'Other', '--repo', otherRepo, '--session', 'other-lead')
+  s.ok('pause', 'first')
+  assert.notEqual(s.rooms('new', 'second', 'Second', '--session', 'another-lead').code, 0)
+  s.ok('close', 'first', 'Finished')
+  s.ok('new', 'second', 'Second', '--session', 'another-lead')
+})
+
+test('simultaneous room creation for the same repo admits exactly one room', async () => {
+  const s = sandbox()
+  const start = (name: string) => new Promise<number | null>((resolve, reject) => {
+    const p = spawn(process.execPath, ['--no-warnings', CLI, 'new', name, name, '--session', name], { env: s.env, stdio: 'ignore' })
+    p.on('error', reject)
+    p.on('exit', resolve)
+  })
+  const codes = await Promise.all([start('first'), start('second')])
+  assert.equal(codes.filter(c => c === 0).length, 1)
+  assert.equal(JSON.parse(s.ok('status', '--json')).length, 1)
+})
+
+test('repo scope recognizes subdirectories, symlinks and Git worktrees', () => {
+  const s = sandbox()
+  const repo = join(s.home, 'project'), sub = join(repo, 'sub'), alias = join(s.home, 'alias'), worktree = join(s.home, 'worktree')
+  mkdirSync(sub, { recursive: true })
+  const git = (...args: string[]) => {
+    const p = spawnSync('git', ['-C', repo, ...args], { env: s.env, encoding: 'utf8' })
+    assert.equal(p.status, 0, p.stderr)
+  }
+  git('init', '-q')
+  git('commit', '-q', '--no-gpg-sign', '--allow-empty', '-m', 'Initial')
+  git('worktree', 'add', '-q', worktree, '-b', 'worker')
+  symlinkSync(repo, alias)
+  s.ok('new', 'first', 'First', '--repo', sub)
+  for (const path of [repo, alias, worktree]) {
+    assert.match(s.rooms('new', 'second', 'Second', '--repo', path, '--session', 'other').err, /Only one room per repo/)
+  }
+  const brief = Record.load(join(s.home, 'first', 'BRIEF.md'))
+  assert.deepEqual(brief.list('repos'), [realpathSync(repo)])
+})
+
+test('prose answers and notes on owner tasks retain the supplied observations', () => {
+  const s = sandbox()
+  s.ok('new', 'ride', 'Ride')
+  s.ok('ask', 'ride', 'What did you see on the ride?', '--text')
+  s.ok('answer', 'ride', 'A01', 'note', '--note', 'The crossing was muddy, but the bridge was clear.')
+  assert.match(readFileSync(s.file('ride', 'decisions', 'A01'), 'utf8'), /note: "The crossing was muddy, but the bridge was clear\."/)
+  s.ok('ask', 'ride', 'Ride the loop', '--todo', '--steps', 'Ride and report observations')
+  s.ok('answer', 'ride', 'A02', 'a', '--note', 'Rode it; the north gate was locked.')
+  assert.match(readFileSync(s.file('ride', 'decisions', 'A02'), 'utf8'), /note: "Rode it; the north gate was locked\."/)
 })
 
 test('a feature room locks building until the PRD is agreed; research may run', () => {
