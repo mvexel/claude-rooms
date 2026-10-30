@@ -376,3 +376,58 @@ test('the session id Claude Code gives its tools identifies the session', () => 
   const r = spawnSync(process.execPath, ['--no-warnings', CLI, 'whoami'], { env, encoding: 'utf8' })
   assert.equal(r.stdout.trim(), 'lead in r', r.stderr)
 })
+
+function gitRepo(s: ReturnType<typeof sandbox>, dir: string) {
+  mkdirSync(dir, { recursive: true })
+  const git = (...args: string[]) => {
+    const p = spawnSync('git', ['-C', dir, ...args], { env: s.env, encoding: 'utf8' })
+    assert.equal(p.status, 0, p.stderr)
+    return p.stdout.trim()
+  }
+  git('init', '-q', '-b', 'main')
+  git('commit', '-q', '--no-gpg-sign', '--allow-empty', '-m', 'Initial')
+  return git
+}
+
+test('worker worktrees are named from the main repo root, and research items get none', () => {
+  const s = sandbox()
+  const repo = join(s.home, 'proj')
+  const git = gitRepo(s, repo)
+  const integration = join(s.home, 'proj-int')
+  git('worktree', 'add', '-q', integration, '-b', 'int')
+  s.ok('new', 'r', 'Room', '--repo', repo)
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  s.ok('add', 'r', 'Look', '--cap', '1', '--acc', 'known', '--in', 'spec', '--research')
+  s.rooms('spawn', 'r', 'T01', '--repo', integration, '--base', 'main')
+  s.rooms('spawn', 'r', 'T02', '--repo', integration, '--base', 'main')
+  const real = realpathSync(repo)
+  assert.ok(existsSync(`${real}-r-t01`))
+  assert.equal(existsSync(`${integration}-r-t01`), false)
+  assert.equal(existsSync(`${real}-r-t02`), false)
+})
+
+test('prune lists done items\' worktrees and removes only merged, clean ones', () => {
+  const s = sandbox()
+  const repo = join(s.home, 'proj')
+  const git = gitRepo(s, repo)
+  s.ok('new', 'r', 'Room', '--repo', repo)
+  for (const t of ['A', 'B', 'C', 'D']) s.ok('add', 'r', t, '--cap', '1', '--acc', 'x', '--in', 'y')
+  const real = realpathSync(repo)
+  for (const id of ['t01', 't02', 't03']) git('worktree', 'add', '-q', `${real}-r-${id}`, '-b', `rooms/r/${id}`, 'main')
+  // t02 has an unmerged commit; t03 is merged but dirty; t01 has none; T04 stays open
+  spawnSync('git', ['-C', `${real}-r-t02`, 'commit', '-q', '--no-gpg-sign', '--allow-empty', '-m', 'work'], { env: s.env })
+  writeFileSync(join(`${real}-r-t03`, 'scratch.txt'), 'x')
+  git('branch', 'rooms/r/t04', 'main')
+  for (const id of ['T01', 'T02', 'T03']) s.ok('set', 'r', id, 'state=done', '--force')
+  const dry = s.ok('prune', 'r')
+  assert.match(dry, /remove T01 rooms\/r\/t01/)
+  assert.match(dry, /keep   T02.*not merged/)
+  assert.match(dry, /keep   T03.*uncommitted/)
+  assert.doesNotMatch(dry, /T04/)
+  assert.ok(existsSync(`${real}-r-t01`))
+  s.ok('prune', 'r', '--yes')
+  assert.equal(existsSync(`${real}-r-t01`), false)
+  assert.ok(existsSync(`${real}-r-t02`))
+  assert.equal(git('branch', '--list', 'rooms/r/t01'), '')
+  assert.notEqual(git('branch', '--list', 'rooms/r/t04'), '')
+})
