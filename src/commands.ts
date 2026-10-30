@@ -10,10 +10,11 @@ import { applyUserSandbox, planUserSandbox, sandboxGap } from './sandbox.ts'
 import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
-import { currentSessionId, findSession, isRunning, listSessions, startSession } from './sessions.ts'
+import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession, WORKER_DISALLOWED_TOOLS } from './sessions.ts'
 import { isHuman, roomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
-import { repositoryIdentity, repositoryRoot } from './repositories.ts'
+import { repositoryIdentity, repositoryRoot, workerWorktree } from './repositories.ts'
+import { pruneCandidates, pruneRoom } from './prune.ts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -586,7 +587,12 @@ export function closeRoom(r: Room, reason: string, force = false): string {
   b.save()
   commit(r.name, `${r.name}: closed`)
   pushInBackground()
-  return `${r.name} closed`
+  const left = pruneCandidates(r).filter(e => e.remove).length
+  return `${r.name} closed${left ? `\n${left} worktree/branch of finished items can go: rooms prune ${r.name} --yes` : ''}`
+}
+
+function cmdPrune(a: Args): string {
+  return pruneRoom(room(a._[0]), has(a, 'yes'))
 }
 
 export function setTitle(r: Room, title: string): string {
@@ -670,8 +676,10 @@ function cmdSpawn(a: Args): string {
   }
   const it = r.find(id ?? fail('usage: rooms spawn <room> <Tnn> [--tier light|standard|review] [--repo <path> [--base <branch>]] | --lead'))
   if (it.get('agent')) {
-    const s = findSession(it.get('agent'))
-    if (s && isRunning(s)) fail(`${id} already has a live worker (${s.id}); send it a message with rooms tell instead`)
+    const sessions = listSessions()
+    const s = findSession(it.get('agent'), sessions)
+    if (isRunning(s ?? it.get('agent'), sessions)) fail(`${id} already has a live worker (${s?.id ?? it.get('agent')}); send it a message with rooms tell instead`)
+    if (!isEnded(s ?? it.get('agent'), sessions) && !has(a, 'force')) fail(`${id}'s worker session ${it.get('agent')} may be alive (liveness unknown: sandboxed or session list unavailable); run from outside the sandbox, or --force once you know it ended`)
   }
   const warns = guardStart(r, it, has(a, 'force'))
   const tierName = flag(a, 'tier') || it.get('tier') || c.worker.tier
@@ -681,10 +689,12 @@ function cmdSpawn(a: Args): string {
   // One worktree per agent: the item's own branch off the integration branch.
   let cwd = flag(a, 'cwd') || process.cwd()
   const repo = flag(a, 'repo')
-  if (repo) {
+  // Research items read; they get no worktree.
+  if (repo && it.get('kind') !== 'research') {
     const base = flag(a, 'base') || r.brief.get('code').split(' ')[0] || 'HEAD'
-    cwd = `${resolve(repo)}-${r.name}-${id.toLowerCase()}`
-    const branch = `rooms/${r.name}/${id.toLowerCase()}`
+    const wt = workerWorktree(repo, r.name, id)
+    cwd = wt.path
+    const branch = wt.branch
     if (!existsSync(cwd)) {
       const w = spawnSync('git', ['-C', repo, 'worktree', 'add', cwd, '-b', branch, base], { encoding: 'utf8' })
       if (w.status !== 0) fail(`git worktree add failed: ${w.stderr.trim()}`)
@@ -708,7 +718,7 @@ function cmdSpawn(a: Args): string {
   ]
     .filter(Boolean)
     .join('\n')
-  const s = startSession({ prompt, cwd, name: `${who} · ${id}`, model, effort, permissionMode: flag(a, 'permission-mode') || c.worker.permissionMode })
+  const s = startSession({ prompt, cwd, name: `${who} · ${id}`, model, effort, permissionMode: flag(a, 'permission-mode') || c.worker.permissionMode, disallowedTools: WORKER_DISALLOWED_TOOLS })
   it.set('state', 'doing')
   it.set('agent', s.sessionId)
   logLine(it, by(), `set state=doing; spawned ${who} (session ${s.id}) in ${cwd}; model: ${model ?? 'default'}, effort: ${effort ?? 'default'}`)
@@ -756,8 +766,11 @@ function cmdChat(a: Args): string {
   const r = room(a._[0])
   const lead = r.leadSession()
   if (!lead) fail(`${r.name} has no lead session; start one with rooms spawn ${r.name} --lead, or run rooms lead ${r.name} from a session`)
-  const s = findSession(lead)
-  const args = s && isRunning(s) ? ['attach', s.id] : ['--resume', lead]
+  const sessions = listSessions()
+  const s = findSession(lead, sessions)
+  const live = liveness(lead, sessions)
+  if (live === 'unknown') fail(`lead session ${lead} liveness unknown (sandboxed?); not resuming, which could fork it`)
+  const args = live === 'alive' && s ? ['attach', s.id] : ['--resume', lead]
   spawnSync(claudeBin(), args, { cwd: roomsHome(), stdio: 'inherit' })
   return ''
 }
@@ -870,6 +883,7 @@ Lead
   rooms statusline [room]                         compact status; accepts Claude status-line JSON on stdin
   rooms brief <room>                                 the binding set: PRD + agreed refinements
   rooms set <room> <id> key=value... [--force] | pause|resume <room> | close <room> "reason"
+  rooms prune <room> [--yes]                         list worktrees/branches of done or dropped items; --yes removes the merged ones
   rooms lead [<room> [session]]                      make this session the lead; no room: the open room for this repo.
                                                      The previous lead is told to hand off.
   rooms tell <room> "msg" [--item Tnn]               message the lead (or a worker, via its item Log)
@@ -940,6 +954,8 @@ export async function run(argv: string[]): Promise<{ text: string; code: number 
       return ok(setPaused(room(a._[0]), false))
     case 'close':
       return ok(cmdClose(a))
+    case 'prune':
+      return ok(cmdPrune(a))
     case 'lead':
       return ok(cmdLead(a))
     case 'chat':

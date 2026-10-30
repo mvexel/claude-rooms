@@ -9,7 +9,7 @@ import { roomsHome } from './config.ts'
 import { emit, receipts } from './events.ts'
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
-import { type Session, findSession, isRunning, listSessions } from './sessions.ts'
+import { type Session, findSession, isEnded, isRunning, listSessions } from './sessions.ts'
 import { cardRank, doingSince, isHuman, roomState, type RoomState, waves } from './state.ts'
 import { closeRoom, setPaused, setTitle, sweep } from './commands.ts'
 
@@ -175,7 +175,7 @@ export function roomDetail(room: Room, st: RoomState, sessions: Session[]) {
     phase: head.get('phase'),
     lead: {
       name: 'lead',
-      state: lead && isRunning(lead) ? (lead.status === 'idle' ? 'idle' : 'working') : room.leadSession() ? 'finished' : 'unreachable',
+      state: isRunning(lead ?? room.leadSession(), sessions) ? (lead?.status === 'idle' ? 'idle' : 'working') : room.leadSession() ? (isEnded(lead ?? room.leadSession(), sessions) ? 'finished' : 'working') : 'unreachable',
       since_min: minutes(head.get('updated')) ?? 0,
     },
     work: {
@@ -194,7 +194,7 @@ export function roomDetail(room: Room, st: RoomState, sessions: Session[]) {
         .map(i => {
           const session = findSession(i.get('agent'), sessions)
           return { ...item(room, i), state: i.get('state'), tier: i.get('tier') || undefined,
-            session_state: session && isRunning(session) ? (session.status === 'idle' ? 'idle' : 'working') : i.get('agent') ? 'finished' : undefined }
+            session_state: isRunning(session ?? i.get('agent'), sessions) ? (session?.status === 'idle' ? 'idle' : session?.status === 'waiting' ? 'waiting for input' : 'working') : i.get('agent') ? (isEnded(session ?? i.get('agent'), sessions) ? 'finished' : 'working') : undefined }
         }),
     })),
     plan: {

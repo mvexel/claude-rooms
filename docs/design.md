@@ -33,6 +33,8 @@ So nothing outside a session ever resumes one that is running. Events go to a pe
 
 Workers get the same mechanism keyed by item (`<room>/<Tnn>`). A worker whose session has ended is resumed with the message, which is safe only because the session list says it isn't running (`resumeStopped`).
 
+**Is a session alive?** `liveness()` in `src/sessions.ts` answers alive, dead or unknown. Inside Claude Code's macOS sandbox, `kill -0` fails with EPERM and `claude agents` drops pids and status (and lists interactive sessions not at all), so a sandboxed caller can't see live sessions. EPERM therefore counts as alive, a missing pid is looked up in `~/.claude/sessions/<pid>.json`, and when the list carries no pids at all the answer is unknown. Unknown is never treated as ended: status doesn't call the room stuck, and spawn, `rooms tell`, `rooms chat` and lead dispatch never start or resume such a session (resuming a running one would fork it). A message to a live worker whose lease has lapsed (a long turn with no tool calls) is queued, not lost: the plugin takes it on its next poll.
+
 Receipts follow each event: `saved → lead_told → lead_read`. The page shows them.
 
 ## Hooks instead of rituals
@@ -41,10 +43,11 @@ Receipts follow each event: `saved → lead_told → lead_read`. The page shows 
 - "D05 b" typed by the owner to the lead is recorded by a prompt hook before the lead reads it.
 - Taps carry `if_match`, so a card that changed is not answered blind. Answers return 202 at once; git happens in the sweep.
 - Workers start with an explicit permission mode and model tier, and the choice is logged on the item.
+- Workers never ask the owner directly: they start with `--disallowedTools AskUserQuestion`, and the plugin denies the tool in worker sessions as a backup. Questions go through `rooms need`, which reaches the lead. A background worker blocked on a prompt nobody sees is the failure this prevents.
 
 ## Room status
 
-Seven statuses, decided in one place (`src/state.ts`), each with one sentence for the owner and at most one action: needs you, stuck, moving, waiting outside, paused, idle, done. "Stuck" means ready work that nothing will start, or events the lead can't receive. `rooms status --yield` judges the room as if the lead stopped now.
+Seven statuses, decided in one place (`src/state.ts`), each with one sentence for the owner and at most one action: needs you, stuck, moving, waiting outside, paused, idle, done. "Stuck" means ready work that nothing will start, events the lead can't receive, or a worker whose session waits for input (the page shows it as "waiting for input" with its session id). A session whose liveness is unknown (see above) never makes a room stuck. `rooms status --yield` judges the room as if the lead stopped now.
 
 ## The page
 

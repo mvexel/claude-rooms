@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { claudeBin, claudeDir } from './config.ts'
 
@@ -15,7 +15,8 @@ export type Session = {
   pid?: number
   cwd?: string
   name?: string
-  status?: string // busy | idle | ...
+  status?: string // busy | idle | waiting | ...
+  waitingFor?: string // what a 'waiting' session needs, e.g. 'input needed'
   state?: string
   kind?: string
 }
@@ -34,20 +35,54 @@ export function findSession(ref: string, sessions = listSessions()): Session | u
   return sessions.find(s => s.sessionId === ref || s.id === ref) ?? sessions.find(s => s.sessionId.startsWith(ref))
 }
 
-function pidAlive(pid: number | undefined): boolean {
-  if (!pid) return false
+export type Liveness = 'alive' | 'dead' | 'unknown'
+
+// kill(pid, 0): EPERM means the process exists but a sandbox or another user
+// forbids signalling it, so it is alive; only ESRCH means gone.
+export function pidLiveness(pid: number): Liveness {
   try {
     process.kill(pid, 0)
-    return true
-  } catch {
-    return false
+    return 'alive'
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    return code === 'EPERM' ? 'alive' : code === 'ESRCH' ? 'dead' : 'unknown'
   }
 }
 
-// A session is running when its process is alive; idle sessions keep theirs.
-export function isRunning(s: Session | undefined): boolean {
-  return !!s && pidAlive(s.pid)
+// ~/.claude/sessions/<pid>.json maps pid to sessionId and stays readable in a
+// sandbox that strips pid and status from `claude agents`.
+function registryPid(ref: string): number | undefined {
+  if (!ref) return undefined
+  try {
+    const dir = join(claudeDir(), 'sessions')
+    for (const f of readdirSync(dir)) {
+      if (!/^\d+\.json$/.test(f)) continue
+      try {
+        const e = JSON.parse(readFileSync(join(dir, f), 'utf8'))
+        if (typeof e.sessionId === 'string' && e.sessionId.startsWith(ref) && Number(e.pid) > 0) return Number(e.pid)
+      } catch {}
+    }
+  } catch {}
+  return undefined
 }
+
+// Is the session's process alive? A pid (listed, else from the registry,
+// which a sandbox leaves readable) decides. Without one, a list where any
+// entry carries a pid was not sandboxed, so a session it lacks or shows
+// pid-less and unregistered is gone. A list with no pids at all (sandboxed,
+// or `claude agents` failed) proves nothing, so liveness stays unknown unless
+// the entry itself says it finished.
+export function liveness(who: Session | string | undefined, sessions: Session[] = []): Liveness {
+  if (!who) return 'unknown'
+  const s = typeof who === 'string' ? findSession(who, sessions) : who
+  const pid = s?.pid ?? registryPid(s?.sessionId ?? (who as string))
+  if (pid) return pidLiveness(pid)
+  if (sessions.some(x => x.pid)) return 'dead'
+  return s && (s.state === 'done' || s.state === 'stopped') ? 'dead' : 'unknown'
+}
+
+export const isRunning = (who: Session | string | undefined, sessions: Session[] = []): boolean => liveness(who, sessions) === 'alive'
+export const isEnded = (who: Session | string | undefined, sessions: Session[] = []): boolean => liveness(who, sessions) === 'dead'
 
 function parentPid(pid: number): number | undefined {
   try {
@@ -81,16 +116,24 @@ export function currentSessionId(): string | undefined {
   return undefined
 }
 
-export type StartOptions = { prompt: string; cwd: string; name?: string; model?: string; effort?: string; permissionMode?: string }
+// Workers can't ask the owner; the plugin's tool.call hook denies it too.
+export const WORKER_DISALLOWED_TOOLS = 'AskUserQuestion'
 
-export function startSession(o: StartOptions): Session {
+export function startArgs(o: StartOptions): string[] {
   const args = ['--bg']
   if (o.name) args.push('--name', o.name)
   if (o.model) args.push('--model', o.model)
   if (o.effort) args.push('--effort', o.effort)
   if (o.permissionMode) args.push('--permission-mode', o.permissionMode)
+  if (o.disallowedTools) args.push('--disallowedTools', o.disallowedTools)
   args.push(o.prompt)
-  const r = spawnSync(claudeBin(), args, { cwd: o.cwd, encoding: 'utf8', timeout: 60_000 })
+  return args
+}
+
+export type StartOptions = { prompt: string; cwd: string; name?: string; model?: string; effort?: string; permissionMode?: string; disallowedTools?: string }
+
+export function startSession(o: StartOptions): Session {
+  const r = spawnSync(claudeBin(), startArgs(o), { cwd: o.cwd, encoding: 'utf8', timeout: 60_000 })
   const out = `${r.stdout}\n${r.stderr}`
   const m = out.match(/backgrounded · ([0-9a-f]{6,})/)
   if (r.status !== 0 || !m) throw new Error(`claude --bg failed: ${out.trim().split('\n').pop()}`)
@@ -102,8 +145,8 @@ export function startSession(o: StartOptions): Session {
 // forks it, and on an unknown one might.
 export function resumeStopped(s: Session, text: string, sessions: Session[]): void {
   const now = sessions.find(x => x.sessionId === s.sessionId)
-  if (!sessions.length || !now) throw new Error('session state unknown; not resuming')
-  if (isRunning(now)) throw new Error(`session ${s.id} is running; resuming would fork it`)
+  if (!sessions.length) throw new Error('session state unknown; not resuming')
+  if (!isEnded(s.sessionId, sessions)) throw new Error(`session ${s.id} is ${isRunning(s.sessionId, sessions) ? 'running; resuming would fork it' : 'of unknown liveness; not resuming'}`)
   const r = spawnSync(claudeBin(), ['--bg', '--resume', s.sessionId, text], {
     cwd: s.cwd && existsSync(s.cwd) ? s.cwd : undefined,
     encoding: 'utf8',

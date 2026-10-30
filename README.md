@@ -80,6 +80,10 @@ A lead or worker running on a different machine from its room isn't supported: t
 
 In a Claude Code session, ask for a room ("start a room for X", "form a team for Y"). The lead skill takes it from there: `rooms new`, premises, a PRD for features, the item graph, then `rooms spawn` for each ready item. You answer cards on the page, or in chat as `D05 b`. `rooms chat <room>` opens the room's lead session to talk to it. `rooms status` shows every room.
 
+Each worker gets its own worktree and branch, `<repo>-<room>-<tnn>` on `rooms/<room>/<tnn>`, named from the main checkout even when `--repo` points at a linked worktree; research items get none. Nothing removes them on its own: `rooms prune <room>` lists the worktrees and branches of done or dropped items and which can go (merged into the room's integration branch or the repo's HEAD, with a clean worktree), and `rooms prune <room> --yes` removes those. `rooms close` reminds you when some are left.
+
+Run `rooms status` outside Claude Code's Bash sandbox when you can: inside it the session list hides pids, so live sessions show as liveness unknown rather than as running or ended.
+
 Who gets asked what:
 
 - **Your cards** are one-way doors (names, public API, deploys, merges to main, spending), premises, the PRD gate, tasks only you can do, and free-text questions.

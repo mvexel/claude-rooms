@@ -376,3 +376,107 @@ test('the session id Claude Code gives its tools identifies the session', () => 
   const r = spawnSync(process.execPath, ['--no-warnings', CLI, 'whoami'], { env, encoding: 'utf8' })
   assert.equal(r.stdout.trim(), 'lead in r', r.stderr)
 })
+
+function gitRepo(s: ReturnType<typeof sandbox>, dir: string) {
+  mkdirSync(dir, { recursive: true })
+  const git = (...args: string[]) => {
+    const p = spawnSync('git', ['-C', dir, ...args], { env: s.env, encoding: 'utf8' })
+    assert.equal(p.status, 0, p.stderr)
+    return p.stdout.trim()
+  }
+  git('init', '-q', '-b', 'main')
+  git('commit', '-q', '--no-gpg-sign', '--allow-empty', '-m', 'Initial')
+  return git
+}
+
+test('worker worktrees are named from the main repo root, and research items get none', () => {
+  const s = sandbox()
+  const repo = join(s.home, 'proj')
+  const git = gitRepo(s, repo)
+  const integration = join(s.home, 'proj-int')
+  git('worktree', 'add', '-q', integration, '-b', 'int')
+  s.ok('new', 'r', 'Room', '--repo', repo)
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  s.ok('add', 'r', 'Look', '--cap', '1', '--acc', 'known', '--in', 'spec', '--research')
+  s.rooms('spawn', 'r', 'T01', '--repo', integration, '--base', 'main')
+  s.rooms('spawn', 'r', 'T02', '--repo', integration, '--base', 'main')
+  const real = realpathSync(repo)
+  assert.ok(existsSync(`${real}-r-t01`))
+  assert.equal(existsSync(`${integration}-r-t01`), false)
+  assert.equal(existsSync(`${real}-r-t02`), false)
+})
+
+test('prune lists done items\' worktrees and removes only merged, clean ones', () => {
+  const s = sandbox()
+  const repo = join(s.home, 'proj')
+  const git = gitRepo(s, repo)
+  s.ok('new', 'r', 'Room', '--repo', repo)
+  for (const t of ['A', 'B', 'C', 'D']) s.ok('add', 'r', t, '--cap', '1', '--acc', 'x', '--in', 'y')
+  const real = realpathSync(repo)
+  for (const id of ['t01', 't02', 't03']) git('worktree', 'add', '-q', `${real}-r-${id}`, '-b', `rooms/r/${id}`, 'main')
+  // t02 has an unmerged commit; t03 is merged but dirty; t01 has none; T04 stays open
+  spawnSync('git', ['-C', `${real}-r-t02`, 'commit', '-q', '--no-gpg-sign', '--allow-empty', '-m', 'work'], { env: s.env })
+  writeFileSync(join(`${real}-r-t03`, 'scratch.txt'), 'x')
+  git('branch', 'rooms/r/t04', 'main')
+  for (const id of ['T01', 'T02', 'T03']) s.ok('set', 'r', id, 'state=done', '--force')
+  const dry = s.ok('prune', 'r')
+  assert.match(dry, /remove T01 rooms\/r\/t01/)
+  assert.match(dry, /keep   T02.*not merged/)
+  assert.match(dry, /keep   T03.*uncommitted/)
+  assert.doesNotMatch(dry, /T04/)
+  assert.ok(existsSync(`${real}-r-t01`))
+  s.ok('prune', 'r', '--yes')
+  assert.equal(existsSync(`${real}-r-t01`), false)
+  assert.ok(existsSync(`${real}-r-t02`))
+  assert.equal(git('branch', '--list', 'rooms/r/t01'), '')
+  assert.notEqual(git('branch', '--list', 'rooms/r/t04'), '')
+})
+
+test('prune removes a branch merged into the integration branch only, not the checkout HEAD', () => {
+  const s = sandbox()
+  const repo = join(s.home, 'proj')
+  const git = gitRepo(s, repo)
+  git('branch', 'int', 'main')
+  s.ok('new', 'r', 'Room', '--repo', repo)
+  const brief = Record.load(join(s.home, 'r', 'BRIEF.md'))
+  brief.set('code', 'int')
+  brief.save()
+  s.ok('add', 'r', 'A', '--cap', '1', '--acc', 'x', '--in', 'y')
+  const real = realpathSync(repo)
+  git('worktree', 'add', '-q', `${real}-r-t01`, '-b', 'rooms/r/t01', 'int')
+  const wt = (...args: string[]) => assert.equal(spawnSync('git', ['-C', `${real}-r-t01`, ...args], { env: s.env }).status, 0)
+  wt('commit', '-q', '--no-gpg-sign', '--allow-empty', '-m', 'work')
+  // fast-forward int to the branch without touching main's HEAD
+  git('branch', '-f', 'int', 'rooms/r/t01')
+  s.ok('set', 'r', 'T01', 'state=done', '--force')
+  assert.match(s.ok('prune', 'r'), /remove T01.*merged into int/)
+  s.ok('prune', 'r', '--yes')
+  assert.equal(existsSync(`${real}-r-t01`), false)
+  assert.equal(git('branch', '--list', 'rooms/r/t01'), '')
+})
+
+test('a worker whose session is waiting for input is not moving: the room is stuck and says so', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'R')
+  s.ok('add', 'r', 'Build', '--owner', 'builder', '--acc', 'works', '--in', 'spec')
+  s.ok('set', 'r', 'T01', 'state=doing', 'agent=abcd1234-0000')
+  const previous = process.env.CLAUDE_ROOMS_HOME
+  process.env.CLAUDE_ROOMS_HOME = s.home
+  const alive = process.pid
+  try {
+    const room = new Room('r')
+    const session = (status: string) => [{ id: 'abcd1234', sessionId: 'abcd1234-0000', pid: alive, status, waitingFor: 'input needed' }]
+    const busy = roomState(room, { sessions: session('busy') })
+    assert.equal(busy.status, 'moving')
+    const st = roomState(room, { sessions: session('waiting') })
+    assert.equal(st.status, 'stuck')
+    assert.deepEqual(st.moving, [])
+    assert.equal(st.sentence, 'T01 worker is waiting for input in session abcd1234.')
+    assert.match(st.warnings.join('\n'), /T01 worker is waiting for input in session abcd1234 \(input needed\)/)
+    const detail = roomDetail(room, st, session('waiting') as never)
+    assert.equal(detail.team.find(m => m.name === 'builder')?.items[0].session_state, 'waiting for input')
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_ROOMS_HOME
+    else process.env.CLAUDE_ROOMS_HOME = previous
+  }
+})

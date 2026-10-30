@@ -34,6 +34,9 @@ async function harness() {
       await hooks.get('session.start')!($, {}, async (e: object) => e)
       await new Promise(r => setTimeout(r, 0))
     },
+    async toolCall(tool: string) {
+      return hooks.get('tool.call')!($, { tool }, async () => ({ ok: true }))
+    },
     async submit(event: object) {
       return hooks.get('prompt.submit')!($, event, async (e: object) => e)
     },
@@ -96,4 +99,18 @@ test('a sandbox gap is said once, on the first prompt about rooms', async () => 
   assert.ok(first.context.some((c: string) => c.includes('sandbox cannot write')))
   const again = await s.submit({ text: 'and the rooms page?' }) as any
   assert.equal((again.context ?? []).some((c: string) => c.includes('sandbox')), false)
+})
+
+test('worker sessions are denied AskUserQuestion; other roles and tools pass', async () => {
+  const w = await harness()
+  w.identify({ room: 'demo', role: 'worker', item: 'T02' })
+  await w.start()
+  const denied = await w.toolCall('AskUserQuestion')
+  assert.match(denied.deny, /rooms need demo T02/)
+  assert.deepEqual(await w.toolCall('Bash'), { ok: true })
+
+  const l = await harness()
+  l.identify({ room: 'demo', role: 'lead' })
+  await l.start()
+  assert.deepEqual(await l.toolCall('AskUserQuestion'), { ok: true })
 })
