@@ -13,16 +13,25 @@ export function git(args: string[], cwd = roomsHome()): { ok: boolean; out: stri
 const STALE_MS = 5 * 60_000
 
 // A directory lock: mkdir is atomic. A holder older than STALE_MS is broken.
+// Only EEXIST means someone holds it; any other error (a sandbox denying the
+// write, say) fails now instead of waiting out the deadline.
 export function withLock<T>(name: string, fn: () => T): T {
   const dir = join(stateDir(), 'locks', `${name}.lock`)
-  mkdirSync(join(stateDir(), 'locks'), { recursive: true })
   const deadline = Date.now() + 120_000
   for (;;) {
     try {
+      mkdirSync(join(stateDir(), 'locks'), { recursive: true })
       mkdirSync(dir)
       writeFileSync(join(dir, 'holder'), `${process.pid} ${new Date().toISOString()}`)
       break
-    } catch {
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      if (code !== 'EEXIST') {
+        try {
+          rmSync(dir, { recursive: true, force: true })
+        } catch {}
+        throw new Error(unwritable(stateDir(), e as Error))
+      }
       try {
         if (Date.now() - statSync(dir).mtimeMs > STALE_MS) rmSync(dir, { recursive: true, force: true })
       } catch {}
@@ -35,6 +44,14 @@ export function withLock<T>(name: string, fn: () => T): T {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+}
+
+export function unwritable(path: string, e: Error): string {
+  const code = (e as NodeJS.ErrnoException).code
+  const denied = code === 'EPERM' || code === 'EACCES' || code === 'EROFS'
+  return denied
+    ? `cannot write ${path} (${code}). In a sandboxed Claude Code session, allow writes to ${roomsHome()} and ${stateDir()} (/sandbox), then retry`
+    : `cannot write ${path}: ${e.message}`
 }
 
 function safeRead(p: string): string {
