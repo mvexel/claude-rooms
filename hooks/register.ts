@@ -13,7 +13,9 @@ import type { EngineInterface, Register } from 'claude-code'
 // Elsewhere: nothing.
 
 const POLL_MS = 5000
-const WHO_MS = 60000
+// Outside a room, how often to ask again. A session made lead by `rooms lead`
+// must start beating before the tracker's lease (45 s) calls it unreachable.
+const WHO_MS = 20000
 
 type Me = { room?: string; role?: string; item?: string; events?: string; status_line?: string }
 
