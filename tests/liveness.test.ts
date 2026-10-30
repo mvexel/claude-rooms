@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isEnded, isRunning, liveness } from '../src/sessions.ts'
+import { WORKER_DISALLOWED_TOOLS, isEnded, isRunning, liveness, startArgs } from '../src/sessions.ts'
 
 const kill = process.kill
 const killing = (code: string | null) => {
@@ -65,4 +65,10 @@ test('a session the sandboxed list omits is found in the registry by id or prefi
   assert.equal(liveness('abcdef12', [{ id: 'z', sessionId: 'z', state: 'failed' }]), 'alive')
   killing('ESRCH')
   assert.equal(liveness('abcdef12', []), 'dead')
+})
+
+test('worker spawn args disable AskUserQuestion; lead spawn args do not', () => {
+  const w = startArgs({ prompt: 'go', cwd: '.', disallowedTools: WORKER_DISALLOWED_TOOLS })
+  assert.deepEqual(w.slice(w.indexOf('--disallowedTools')), ['--disallowedTools', 'AskUserQuestion', 'go'])
+  assert.ok(!startArgs({ prompt: 'go', cwd: '.' }).includes('--disallowedTools'))
 })

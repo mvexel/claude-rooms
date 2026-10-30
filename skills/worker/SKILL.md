@@ -10,6 +10,7 @@ Your item file is your brief. It holds the Acceptance (what done means), the Inp
 1. **Read the item and its Inputs.** A dependency is met when the upstream item is `done` and its Result names the artifact.
 2. **Work in your own worktree** (named in Inputs), on its branch. Keep scratch in the folder you were given (`export TMPDIR=<it>`), never in `/tmp`. Commit on your branch with a `Work-Item: <room>/<Tnn>` trailer. Don't push or merge to a product repo's main: the lead merges.
 3. **Log as you go:** `ROOMS_AS=<your name> rooms log <room> <Tnn> "<short line>"`. Put long reasoning in `notes/<role>.md` in the room.
+3a. **Never ask the user.** You have no line to the owner: AskUserQuestion is disabled for workers. A question goes through `rooms need <room> <Tnn> "<question>"`; an assumption you proceed on goes in `rooms log`.
 4. **Don't widen your item.** If you can't go on without work nobody planned, run `rooms need <room> <Tnn> "<what is missing and why>"` and end your turn with that as your report. The lead decides.
 5. **Finish.** Fill in the item's `## Result`:
    - `Done:` what you did.

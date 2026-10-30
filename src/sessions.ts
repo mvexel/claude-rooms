@@ -116,16 +116,24 @@ export function currentSessionId(): string | undefined {
   return undefined
 }
 
-export type StartOptions = { prompt: string; cwd: string; name?: string; model?: string; effort?: string; permissionMode?: string }
+// Workers can't ask the owner; the plugin's tool.call hook denies it too.
+export const WORKER_DISALLOWED_TOOLS = 'AskUserQuestion'
 
-export function startSession(o: StartOptions): Session {
+export function startArgs(o: StartOptions): string[] {
   const args = ['--bg']
   if (o.name) args.push('--name', o.name)
   if (o.model) args.push('--model', o.model)
   if (o.effort) args.push('--effort', o.effort)
   if (o.permissionMode) args.push('--permission-mode', o.permissionMode)
+  if (o.disallowedTools) args.push('--disallowedTools', o.disallowedTools)
   args.push(o.prompt)
-  const r = spawnSync(claudeBin(), args, { cwd: o.cwd, encoding: 'utf8', timeout: 60_000 })
+  return args
+}
+
+export type StartOptions = { prompt: string; cwd: string; name?: string; model?: string; effort?: string; permissionMode?: string; disallowedTools?: string }
+
+export function startSession(o: StartOptions): Session {
+  const r = spawnSync(claudeBin(), startArgs(o), { cwd: o.cwd, encoding: 'utf8', timeout: 60_000 })
   const out = `${r.stdout}\n${r.stderr}`
   const m = out.match(/backgrounded · ([0-9a-f]{6,})/)
   if (r.status !== 0 || !m) throw new Error(`claude --bg failed: ${out.trim().split('\n').pop()}`)
