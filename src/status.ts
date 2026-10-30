@@ -1,6 +1,6 @@
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
-import { type RoomState, isHuman, waves } from './state.ts'
+import { type RoomState, isHuman, waves, readyUnstaffed, openCards } from './state.ts'
 import { options } from './answer.ts'
 import { lastPush, uncommitted } from './git.ts'
 import { pending } from './events.ts'
@@ -83,4 +83,25 @@ export function statusText(room: Room, st: RoomState, brief = false): string {
 
 export function cardLine(d: Record): string {
   return `${d.get('id')} ${d.get('title')}`
+}
+
+// Cheap enough for the status bar: record reads only, no session subprocesses.
+export function roomStatusLine(room: Room): string {
+  const items = room.items(), cardsOpen = openCards(room);
+  const blockedByOwner = new Set(cardsOpen.flatMap(c => c.list('blocks')));
+  const ready = readyUnstaffed(room).filter(id => !blockedByOwner.has(id));
+  const count = (state: string) => items.filter(i => i.get('state') === state).length;
+  const moving = count('doing'), review = count('review');
+  const waiting = count('blocked') + items.filter(i => i.get('state') === 'todo' && !ready.includes(i.get('id'))).length;
+  const clean = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]/g, '').replace(/\s+/g, ' ').trim();
+  const next = items.find(i => ready.includes(i.get('id')));
+  const cards = cardsOpen.length;
+  const parts = [clean(room.name), `${moving} moving`, `${waiting} waiting`];
+  if (review) parts.push(`${review} in review`);
+  if (cards) parts.push(`${cards} need you`);
+  if (room.isClosed()) parts.push('done');
+  else if (room.isPaused()) parts.push('paused');
+  else if (next) parts.push(`next: ${next.get('id')} ${clean(next.get('title')).slice(0, 48)}`);
+  else parts.push('next: none ready');
+  return parts.join(' · ');
 }

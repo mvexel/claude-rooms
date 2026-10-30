@@ -114,3 +114,19 @@ The design, and the reasoning behind it, are in [docs/design.md](docs/design.md)
 ## License
 
 Public domain ([Unlicense](LICENSE))
+
+### Room status in Claude Code
+
+The plugin status entry shows the current room’s moving/waiting counts, items in review, owner cards and next ready step. It refreshes with the plugin poll. For a custom Claude Code status line, use `rooms statusline`: it reads the session ID from Claude’s stdin JSON and stays blank outside a room. `rooms statusline <room>` selects one explicitly.
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "rooms statusline",
+    "refreshInterval": 5
+  }
+}
+```
+
+Merge this into Claude settings only if you want to use it as your status line; an existing status-line script can call the same command with the original stdin JSON. Waiting counts blocked items and queued items that cannot start; next is the first ready item, suppressed when paused or closed.

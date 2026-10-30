@@ -5,6 +5,9 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Record } from '../src/record.ts'
+import { Room } from '../src/room.ts'
+import { roomState } from '../src/state.ts'
+import { roomDetail } from '../src/server.ts'
 
 // End to end through the CLI, in a fresh rooms home per test. `claude` is
 // replaced by /bin/false: no session list, so nothing is ever started.
@@ -146,3 +149,59 @@ test('events: one delivery for many, receipts follow them', () => {
   assert.match(ev, /2 new events/)
   assert.equal(JSON.parse(s.ok('hook', 'poll', '--session', 'lead-session-1', '--take')).events, '')
 })
+
+
+test('room plan includes completed dependencies and summaries; team keeps idle members', () => {
+  const s = sandbox();
+  s.ok('new', 'r', 'R');
+  s.ok('add', 'r', 'Schema', '--owner', 'architect', '--acc', 'Schema documented', '--in', 'brief');
+  s.ok('set', 'r', 'T01', 'state=done');
+  s.ok('add', 'r', 'Build', '--owner', 'builder', '--dep', 'T01', '--acc', 'Build works', '--in', 'schema');
+  s.ok('add', 'r', 'Verify', '--dep', 'T02', '--acc', 'Checks pass', '--in', 'build');
+  s.ok('add', 'r', 'Old approach', '--acc', 'Obsolete', '--in', 'brief');
+  s.ok('set', 'r', 'T04', 'state=dropped');
+  const file = s.file('r', 'items', 'T02'), record = Record.load(file);
+  record.setSection('Summary', 'Build the API.\nKeep it small.'); record.save();
+  const previous = process.env.CLAUDE_ROOMS_HOME;
+  process.env.CLAUDE_ROOMS_HOME = s.home;
+  try {
+    const room = new Room('r'), detail = roomDetail(room, roomState(room, { sessions: [] }), []);
+    assert.equal(detail.plan.items.length, 4);
+    assert.equal(detail.plan.items[0].state, 'done');
+    assert.equal(detail.plan.items[0].summary, 'Schema documented');
+    assert.deepEqual(detail.plan.items[1].after, ['T01']);
+    assert.equal(detail.plan.items[1].summary, 'Build the API. Keep it small.');
+    assert.equal(detail.plan.items[3].state, 'dropped');
+    assert.equal(detail.team.find(m => m.name === 'architect')?.items.length, 0);
+    assert.equal(detail.team.find(m => m.name === 'builder')?.items[0].title, 'Build');
+    assert.equal(detail.team.find(m => m.name === 'Unassigned')?.items[0].id, 'T03');
+    assert.equal(detail.team_roster, undefined);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_ROOMS_HOME;
+    else process.env.CLAUDE_ROOMS_HOME = previous;
+  }
+});
+
+test('status bar follows the session, dependencies, owner blocks and pause', () => {
+  const s = sandbox();
+  s.ok('new', 'r', 'R');
+  s.ok('add', 'r', 'Build', '--acc', 'Works', '--in', 'brief');
+  s.ok('add', 'r', 'Verify', '--dep', 'T01', '--acc', 'Passes', '--in', 'build');
+  assert.match(s.ok('statusline', 'r'), /0 moving · 1 waiting · next: T01 Build/);
+  assert.match(JSON.parse(s.ok('hook', 'poll', '--session', 'lead-session-1')).status_line, /next: T01 Build/);
+  s.ok('ask', 'r', 'Approve?', '-o', 'Yes', '-o', 'No', '--door', 'one', '--blocks', 'T01');
+  assert.match(s.ok('statusline', 'r'), /2 waiting · 1 need you · next: none ready/);
+  s.ok('answer', 'r', 'D01', 'a', '--quote', 'D01 a');
+  s.ok('set', 'r', 'T01', 'state=doing');
+  assert.match(s.ok('statusline', 'r'), /1 moving · 1 waiting/);
+  s.ok('pause', 'r');
+  assert.match(s.ok('statusline', 'r'), /paused$/);
+  const result = spawnSync(process.execPath, ['--no-warnings', CLI, 'statusline'], {
+    env: s.env, encoding: 'utf8', input: JSON.stringify({ session_id: 'lead-session-1' }),
+  });
+  assert.match(result.stdout, /r · 1 moving · 1 waiting · paused/);
+  const outside = spawnSync(process.execPath, ['--no-warnings', CLI, 'statusline'], {
+    env: s.env, encoding: 'utf8', input: JSON.stringify({ session_id: 'unrelated' }),
+  });
+  assert.equal(outside.stdout, '');
+});

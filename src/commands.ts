@@ -11,7 +11,7 @@ import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
 import { currentSessionId, findSession, isRunning, listSessions, startSession } from './sessions.ts'
 import { isHuman, roomState } from './state.ts'
-import { statusText } from './status.ts'
+import { roomStatusLine, statusText } from './status.ts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -660,7 +660,7 @@ function cmdHook(a: Args): string {
     const key = me.role === 'lead' ? me.room : `${me.room}/${me.item}`
     beat(key, session)
     const text = has(a, 'take') ? render(key, take(key)) : ''
-    return JSON.stringify({ ...me, events: text })
+    return JSON.stringify({ ...me, events: text, status_line: roomStatusLine(new Room(me.room)) })
   }
   if (verb === 'stop') {
     // A worker's turn ended. If its item is still doing, it stopped without reporting.
@@ -708,6 +708,7 @@ Lead
   rooms answer <room> <id> <letter|note> [--quote "owner's words"] [--note "..."] | --reply "text"
   rooms prd <room> review | rooms rf <room> new "<title>" --touches FR4 | rooms rf <room> RFnn review [--quote ...]
   rooms status [room] [--yield] [--brief] [--json]   exit 1 with --yield when stopping now would leave it stuck
+  rooms statusline [room]                         compact status; accepts Claude status-line JSON on stdin
   rooms brief <room>                                 the binding set: PRD + agreed refinements
   rooms set <room> <id> key=value... [--force] | pause|resume <room> | close <room> "reason" | lead <room> [session]
   rooms tell <room> "msg" [--item Tnn]               message the lead (or a worker, via its item Log)
@@ -758,6 +759,17 @@ export async function run(argv: string[]): Promise<{ text: string; code: number 
       return ok(cmdRf(a))
     case 'brief':
       return ok(cmdBinding(room(a._[0])) || `${a._[0]} has no PRD`)
+    case 'statusline': {
+      if (a._[0]) return ok(roomStatusLine(room(a._[0])))
+      let session = flag(a, 'session')
+      if (!session && !process.stdin.isTTY) {
+        let input = ''
+        for await (const chunk of process.stdin) input += chunk
+        try { session = JSON.parse(input).session_id || ''; } catch { return ok(''); }
+      }
+      const me = whoami(session || currentSessionId() || '')
+      return ok(me.room ? roomStatusLine(new Room(me.room)) : '')
+    }
     case 'status':
       return cmdStatus(a)
     case 'pause':

@@ -8,7 +8,7 @@ Served by `rooms serve` (src/server.ts). The page (`web/index.html`) builds URLs
 |---|---|
 | `GET /api/inbox` | `{now, count, pulse{moving,waiting_outside,stuck,paused,idle,needs_you}, alarms[], cards[], going_ahead[], waiting_on_team[]}`. Cards are sorted most blocking first. A card waiting on the lead's reply to your question sits in `waiting_on_team`. |
 | `GET /api/rooms` | `{rooms_home, rooms: RoomSummary[]}` |
-| `GET /api/rooms/{room}` | `RoomDetail`: summary plus `phase, lead, work{moving,review,ready_unstaffed,waiting,blocked_on_you,done_count}, plan{waves[{label,items:[id]}]}, decided[], lead_note, attention[], paused` |
+| `GET /api/rooms/{room}` | `RoomDetail`: summary plus `phase, lead, work{moving,review,ready_unstaffed,waiting,blocked_on_you,done_count}, plan{waves[{label,items:[id]}], items[{id,title,state,summary,after:[id],owner_name?,age_min?,waits_on?}]}, decided[], lead_note, attention[], paused` |
 | `GET /api/cards/{room}/{id}` | Any record (card, item, refinement, `PRD`): `{id,title,state,owner,why,source,thread[],history[],sections[{h,text}],file}` |
 | `GET /api/receipts?ids=a,b` | `[{id, delivery: saved|lead_told|lead_read|error|unknown, at, error?}]` |
 
@@ -23,3 +23,7 @@ A card has `room, room_title, room_status, room_status_note?, id, kind (decision
 | `POST /api/cards/{room}/{id}/stop` | `{choice?, note?}` | Stops a going-ahead card: with `choice` it answers that option instead; without one it becomes an open card. |
 | `POST /api/rooms/{room}/pause` | `{paused: bool}` | Pauses or resumes the room and tells the lead. |
 | `POST /api/rooms/{room}/wake` | `{note?}` | Asks the lead to get the room moving. |
+
+The room’s **View plan** disclosure shows a scrollable dependency graph of all recorded items, including done and dropped steps. Summaries use the item’s Summary section, then its preamble, then Acceptance criteria (up to 400 characters). Each step opens its full record. The disclosure and graph scroll position survive polling.
+
+Room detail also includes `team_roster` (the brief’s Team section) and `team[{name,items}]`. Team assignments carry item state, optional tier and session state; members without open assignments remain visible. The Team disclosure shows the roster, lead status and linked assignments.

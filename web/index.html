@@ -162,6 +162,34 @@ textarea:focus, input:focus, button:focus-visible { outline:2px solid var(--acce
 .note { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-card); padding:12px 14px; font-size:15px; }
 .note small { color:var(--ink-2); }
 
+.team-body { border-top:1px solid var(--line); }
+.team-member { padding:12px 14px; border-top:1px solid var(--line); }
+.team-member:first-child { border-top:0; }
+.team-member > b { font-size:14px; }
+.team-task { display:flex; flex-direction:column; gap:2px; min-height:48px; text-align:left; background:none; border:0; padding:8px 0; width:100%; font-size:14px; }
+/* Plan stays a single quiet row until opened. */
+.plan { margin-top:22px; background:var(--surface); border:1px solid var(--line); border-radius:var(--r-card); overflow:hidden; }
+.plan-toggle { width:100%; min-height:64px; display:flex; align-items:center; gap:12px; padding:12px 14px; border:0; background:none; text-align:left; }
+.plan-toggle .tt { flex:1; }
+.plan-toggle b, .plan-toggle small { display:block; }
+.plan-toggle small { color:var(--ink-2); font-size:13px; margin-top:2px; }
+.plan-help { margin:0; padding:0 14px 12px; font-size:13px; color:var(--ink-2); }
+.plan-scroll { overflow:auto; max-height:520px; border-top:1px solid var(--line); background:var(--bg); }
+.plan-canvas { position:relative; }
+.plan-links { position:absolute; inset:0; pointer-events:none; color:var(--ink-2); }
+.plan-node { position:absolute; width:216px; height:150px; padding:10px 12px; background:var(--surface); border:1px solid var(--line); border-radius:10px; text-align:left; display:flex; flex-direction:column; gap:5px; overflow:hidden; }
+.plan-node:hover { border-color:var(--accent); }
+.plan-node.doing { border-color:var(--accent); }
+.plan-node.blocked { border-color:var(--signal); }
+.plan-node.dropped { border-style:dashed; }
+.plan-node .meta { justify-content:space-between; font-size:11px; letter-spacing:0; text-transform:none; }
+.plan-node .node-title { font-size:14px; line-height:1.35; font-weight:600; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+.plan-node .node-summary { font-size:12px; line-height:1.4; color:var(--ink-2); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; overflow-wrap:anywhere; }
+.plan-node .node-state { color:var(--ink-2); }
+.plan-node.doing .node-state { color:var(--accent); }
+.plan-node.done .node-state { color:var(--ok); }
+.plan-node.blocked .node-state { color:var(--signal); }
+
 /* more */
 .seg { display:inline-grid; grid-auto-flow:column; background:var(--sunk); border-radius:10px; padding:3px; gap:2px; }
 .seg button { border:0; background:none; min-height:38px; padding:0 12px; border-radius:8px; font-size:14px; color:var(--ink-2); }
@@ -217,7 +245,7 @@ const POLL_MS = 20000;
 
 const S = { inbox: null, rooms: null, roomsHome: "", detail: {}, loadedAt: null, offline: false, error: "" };
 const ui = {
-  openGroups: new Set(), notes: load("notes", {}), noteOpen: new Set(), pending: {}, receipts: {},
+  openTeam: new Set(), openPlans: new Set(), planScroll: {}, openGroups: new Set(), notes: load("notes", {}), noteOpen: new Set(), pending: {}, receipts: {},
   todo: {}, resumeToo: {}, changed: {}, waiting: [], dismissed: new Set(load("dismissed", [])), wakeState: {},
 };
 const etags = {}, cache = {};
@@ -692,6 +720,70 @@ function itemRows(room, items, sub) {
   return h("div", { class: "items" }, items.map(i => h("button", { class: "it", onclick: () => openRecord(room, i.id) },
     h("span", { class: "id" }, i.id), h("span", { class: "tt" }, i.title, h("small", {}, sub(i))), i.critical ? h("span", { class: "star", title: "critical path" }, "★") : null)));
 }
+// Lay out every recorded item, including done/dropped work. Unknown dependencies
+// remain in the accessible labels; cycles go in a final column rather than looping.
+function planLayout(items) {
+  const left = [...items], placed = new Set(), known = new Set(items.map(i => i.id)), columns = [];
+  while (left.length) {
+    const ready = left.filter(i => (i.after || []).every(id => !known.has(id) || placed.has(id)));
+    if (!ready.length) { columns.push([...left]); break; }
+    columns.push(ready);
+    for (const i of ready) { placed.add(i.id); left.splice(left.indexOf(i), 1); }
+  }
+  return columns;
+}
+function planView(room, items) {
+  const open = ui.openPlans.has(room), done = items.filter(i => i.state === "done").length;
+  const bodyId = "plan-" + room;
+  const panel = h("section", { class: "plan", "aria-label": "Execution plan" });
+  const toggle = h("button", { class: "plan-toggle", "aria-expanded": String(open), "aria-controls": bodyId },
+    h("span", { class: "tt" }, h("b", {}, "View plan"), h("small", {}, `${items.length} steps · ${done} done`)),
+    h("span", { class: "chev", "aria-hidden": "true" }, open ? "⌄" : "›"));
+  const body = h("div", { id: bodyId, hidden: !open });
+  let built = false;
+  function build() {
+    if (built) return;
+    built = true;
+    const columns = planLayout(items), positions = new Map();
+    columns.forEach((col, x) => col.forEach((i, y) => positions.set(i.id, { x: 16 + x * 264, y: 16 + y * 174 })));
+    const width = columns.length * 264 - 16, height = Math.max(...columns.map(c => c.length)) * 174 + 8;
+    const canvas = h("div", { class: "plan-canvas", style: `width:${width}px;height:${height}px` });
+    const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("class", "plan-links"); svg.setAttribute("width", width); svg.setAttribute("height", height); svg.setAttribute("aria-hidden", "true");
+    const markerId = "arrow-" + room;
+    const defs = document.createElementNS(ns, "defs"), marker = document.createElementNS(ns, "marker");
+    for (const [k, v] of Object.entries({ id: markerId, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse" })) marker.setAttribute(k, v);
+    const tip = document.createElementNS(ns, "path"); tip.setAttribute("d", "M 0 0 L 10 5 L 0 10 z"); tip.setAttribute("fill", "currentColor"); marker.append(tip); defs.append(marker); svg.append(defs);
+    for (const i of items) for (const dep of i.after || []) {
+      const from = positions.get(dep), to = positions.get(i.id);
+      if (!from) continue;
+      const path = document.createElementNS(ns, "path"), x1 = from.x + 216, y1 = from.y + 75, x2 = to.x, y2 = to.y + 75;
+      path.setAttribute("d", `M ${x1} ${y1} C ${x1 + 24} ${y1}, ${x2 - 24} ${y2}, ${x2 - 4} ${y2}`);
+      path.setAttribute("fill", "none"); path.setAttribute("stroke", "currentColor"); path.setAttribute("stroke-width", "1.25"); path.setAttribute("marker-end", `url(#${markerId})`); svg.append(path);
+    }
+    canvas.append(svg);
+    const states = { todo: "To do", doing: "Moving", review: "In review", blocked: "Blocked", done: "✓ Done", dropped: "Dropped" };
+    for (const i of columns.flat()) {
+      const p = positions.get(i.id), deps = (i.after || []).length ? "After " + i.after.join(", ") : "No dependencies";
+      canvas.append(h("button", { class: "plan-node " + i.state, style: `left:${p.x}px;top:${p.y}px`,
+        "aria-label": `${i.id}: ${i.title}. ${states[i.state] || i.state}. ${deps}. ${i.summary || ""} Open work item.`,
+        title: deps, onclick: () => openRecord(room, i.id) },
+        h("span", { class: "meta" }, i.id, h("span", { class: "node-state" }, states[i.state] || i.state)),
+        h("span", { class: "node-title" }, i.title), h("span", { class: "node-summary" }, i.summary || "Open for work item details")));
+    }
+    const scroll = h("div", { class: "plan-scroll", tabindex: "0", role: "region", "aria-label": "Plan dependency graph", onscroll: e => { ui.planScroll[room] = [e.target.scrollLeft, e.target.scrollTop]; } }, canvas);
+    body.append(h("p", { class: "plan-help" }, "Follow the arrows from left to right. Scroll to explore; select a step for details."), scroll);
+    requestAnimationFrame(() => { const pos = ui.planScroll[room]; if (pos) { scroll.scrollLeft = pos[0]; scroll.scrollTop = pos[1]; } });
+  }
+  toggle.addEventListener("click", () => {
+    const next = body.hidden;
+    if (next) { ui.openPlans.add(room); build(); } else ui.openPlans.delete(room);
+    body.hidden = !next; toggle.setAttribute("aria-expanded", String(next)); toggle.querySelector(".chev").textContent = next ? "⌄" : "›";
+  });
+  if (open) build();
+  panel.append(toggle, body);
+  return panel;
+}
 function roomView(name) {
   const f = document.createDocumentFragment();
   const r = S.detail[name];
@@ -722,12 +814,25 @@ function roomView(name) {
   if (ready.length) f.append(sec("Ready, no agent", ready.length), itemRows(name, ready, i => i.owner_name ? `for ${i.owner_name}` : "no owner yet"));
   if (waiting.length) f.append(sec("Waiting", waiting.length), itemRows(name, waiting, i => [i.owner_name, i.waits_on ? "waits on " + i.waits_on : i.after?.length ? "after " + i.after.join(", ") : ""].filter(Boolean).join(" · ")));
   if (onYou.length) f.append(sec("Blocked on you", onYou.length), itemRows(name, onYou, i => i.owner_name || ""));
-  const waves = r.plan?.waves || [], crit = r.plan?.critical || [];
-  if (waves.length > 1) {
-    f.append(sec("Plan", crit.length ? "★ critical path" : ""));
-    f.append(h("div", { class: "items" }, waves.map(wv => h("div", { class: "it" }, h("span", { class: "id" }, ""), h("span", { class: "tt" }, h("b", {}, wv.label),
-      h("small", {}, (wv.items || []).map(i => { const id = typeof i === "string" ? i : i.id; return id + (crit.includes(id) ? " ★" : ""); }).join(" · ")))))));
+  if (r.team?.length || r.team_roster) {
+    const assigned = (r.team || []).filter(m => m.name !== "Unassigned");
+    const open = ui.openTeam.has(name), bodyId = "team-" + name;
+    const body = h("div", { id: bodyId, hidden: !open, class: "team-body" });
+    const labels = { doing: "Moving", review: "In review", blocked: "Blocked", todo: "Queued" };
+    if (leadLine) body.append(h("div", { class: "team-member small" }, leadLine));
+    if (r.team_roster) body.append(h("div", { class: "team-member sec-body" }, r.team_roster));
+    for (const member of r.team || []) body.append(h("div", { class: "team-member" },
+      h("b", {}, member.name), !member.items.length ? h("p", { class: "small", style: "margin:4px 0 0" }, "No open assignments") : null, member.items.map(i => h("button", { class: "team-task", onclick: () => openRecord(name, i.id) },
+        h("span", { class: "small" }, labels[i.state] || i.state, " · ", i.id, i.tier ? " · " + i.tier : "", i.session_state ? " · agent " + i.session_state : ""), h("span", {}, i.title)))));
+    const toggle = h("button", { class: "plan-toggle", "aria-expanded": String(open), "aria-controls": bodyId, onclick: () => {
+      const next = body.hidden; body.hidden = !next;
+      if (next) ui.openTeam.add(name); else ui.openTeam.delete(name);
+      toggle.setAttribute("aria-expanded", String(next)); toggle.querySelector(".chev").textContent = next ? "⌄" : "›";
+    } }, h("span", { class: "tt" }, h("b", {}, "Team"), h("small", {}, assigned.length ? assigned.map(m => m.name).join(" · ") : "Work awaiting an owner")),
+      h("span", { class: "chev", "aria-hidden": "true" }, open ? "⌄" : "›"));
+    f.append(h("section", { class: "plan", "aria-label": "Team and assignments" }, toggle, body));
   }
+  if (r.plan?.items?.length) f.append(planView(name, r.plan.items));
   if (w.done_count) f.append(h("p", { class: "small", style: "margin:8px 2px" }, `${w.done_count} item${w.done_count > 1 ? "s" : ""} done`));
   if ((r.decided || []).length) f.append(sec("Decided recently", r.decided.length), h("div", { class: "items" }, r.decided.map(d => h("button", { class: "it", onclick: () => openRecord(name, d.id) },
     h("span", { class: "id" }, d.id), h("span", { class: "tt" }, d.title, h("small", {}, [d.went_ahead ? "went ahead with " + d.answer_label : d.answer_label, d.by, d.at].filter(Boolean).join(" · "), d.reversed ? " · REVERSED " + d.reversed : ""))))));
