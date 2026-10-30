@@ -157,7 +157,7 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
   const heldEvents = waitingEvents.length > 0 && !leaseFresh(room) && leadLive
   const stuckWhy =
     heldEvents
-      ? `${plural(waitingEvents.length, 'update')} for the lead can't reach it: its session is open without the rooms plugin.`
+      ? `${plural(waitingEvents.length, 'update')} for the lead can't reach it: its session is open but not checking in (no rooms plugin there, or rooms serve is older than the plugin: restart it).`
       : !moving.length && !leadWorking && finishedQuiet.length
         ? `${finishedQuiet.join(', ')} finished without reporting back, and nothing else is running.`
         : !moving.length && !leadWorking && ready.length

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readFileSync, readSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { type Dirent, appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -99,9 +99,16 @@ function cmdInit(): string {
 }
 
 // State moved into the rooms home in 0.3. Move an older one over once.
+// A process still on older code (a long-running rooms serve, say) keeps
+// writing the old place; its inboxes are carried over on every command, so
+// no event is stranded there while versions are mixed.
 function moveLegacyState(): string[] {
   const from = legacyStateDir()
-  if (process.env.CLAUDE_ROOMS_STATE || !existsSync(from) || existsSync(stateDir())) return []
+  if (process.env.CLAUDE_ROOMS_STATE || !existsSync(from)) return []
+  if (existsSync(stateDir())) {
+    carryLegacyInboxes(join(from, 'rooms'), join(stateDir(), 'rooms'))
+    return []
+  }
   try {
     mkdirSync(roomsHome(), { recursive: true })
     cpSync(from, stateDir(), { recursive: true })
@@ -109,6 +116,32 @@ function moveLegacyState(): string[] {
     return [`state: moved ${from} to ${stateDir()}`]
   } catch (e) {
     return [`state: could not move ${from} to ${stateDir()}: ${(e as Error).message}`]
+  }
+}
+
+// Rename first, so an append from the old writer lands in a new file, not a lost one.
+function carryLegacyInboxes(from: string, to: string): void {
+  let entries: Dirent[]
+  try {
+    entries = readdirSync(from, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const e of entries) {
+    const src = join(from, e.name)
+    if (e.isDirectory()) carryLegacyInboxes(src, join(to, e.name))
+    else if (e.name === 'inbox.jsonl') {
+      try {
+        const moving = `${src}.${process.pid}.moving`
+        renameSync(src, moving)
+        const text = readFileSync(moving, 'utf8')
+        if (text.trim()) {
+          mkdirSync(to, { recursive: true })
+          appendFileSync(join(to, 'inbox.jsonl'), text.endsWith('\n') ? text : text + '\n')
+        }
+        rmSync(moving)
+      } catch {}
+    }
   }
 }
 

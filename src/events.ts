@@ -152,7 +152,7 @@ export function dispatch(roomName: string): { route: Route; why: string } {
       const sessions = listSessions()
       if (!sessions.length) return { route: 'held' as Route, why: 'session list unavailable; not guessing' }
       const s = findSession(lead, sessions)
-      if (s && isRunning(s)) return { route: 'held' as Route, why: `lead session ${s.id} is running without the rooms plugin; open it, or install the plugin there` }
+      if (s && isRunning(s)) return { route: 'held' as Route, why: `lead session ${s.id} is running but not checking in; install the plugin there, or restart rooms serve if it predates the plugin` }
     }
     const taken = take(roomName)
     if (!taken.length) return { route: 'empty' as Route, why: '' }
