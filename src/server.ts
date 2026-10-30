@@ -11,7 +11,7 @@ import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
 import { type Session, findSession, isRunning, listSessions } from './sessions.ts'
 import { cardRank, doingSince, isHuman, roomState, type RoomState, waves } from './state.ts'
-import { setPaused, sweep } from './commands.ts'
+import { closeRoom, setPaused, sweep } from './commands.ts'
 
 // The owner's page and its API (shapes in docs/ui.md, from the UX spec §8).
 // GETs are open to whoever reaches the port; POSTs need ROOMS_USERS to list
@@ -177,6 +177,7 @@ export function roomDetail(room: Room, st: RoomState, sessions: Session[]) {
       waiting: [...by('blocked'), ...by('todo').filter(i => !st.ready.includes(i.get('id')) && !blockedOnYou.has(i.get('id')))].map(i => item(room, i)),
       blocked_on_you: items.filter(i => OPEN_ITEM.has(i.get('state')) && blockedOnYou.has(i.get('id'))).map(i => item(room, i)),
       done_count: by('done').length,
+      open_count: items.filter(i => OPEN_ITEM.has(i.get('state'))).length,
     },
     team_roster: room.brief.section('Team').replace(/^One line per member: role, model tier, charter \(what it owns and what it does not\).$/, '').trim() || undefined,
     team: [...new Set(items.map(i => i.get('owner')).filter(Boolean)), ...(items.some(i => OPEN_ITEM.has(i.get('state')) && !i.get('owner')) ? ['Unassigned'] : [])].map(name => ({
@@ -364,6 +365,7 @@ export async function serve(o: ServeOptions): Promise<void> {
       if (parts[0] === 'api' && parts[1] === 'rooms' && parts.length === 4) {
         const room = new Room(parts[2]).must()
         if (parts[3] === 'pause') return send(req, res, 202, { ok: true, message: setPaused(room, !!body.paused) })
+        if (parts[3] === 'close') return send(req, res, 202, { ok: true, message: closeRoom(room, 'closed by the owner on the page') })
         if (parts[3] === 'wake') {
           const st = roomState(room, { sessions: fresh() })
           const note = String(body.note ?? '').trim()
