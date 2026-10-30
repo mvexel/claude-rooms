@@ -71,6 +71,12 @@ async function roomCommand($: EngineInterface, raw: string) {
   return { text: (r.stdout || r.stderr).trim() || `rooms exited ${r.exitCode}` }
 }
 
+// The event names the tool in a few spellings across engine versions.
+function toolName(e: any): string | undefined {
+  const t = e?.tool
+  return typeof t === 'string' ? t : t?.name ?? e?.name ?? e?.toolName
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'room', description: "This session's room status, or any rooms command: /room status, /room help" })
@@ -95,6 +101,10 @@ export const register: Register = on => {
 
   // Mid-turn delivery for the lead: events ride along with a tool result.
   on('tool.call', async ($, e, next) => {
+    // A worker never asks the owner directly; its questions go through the lead.
+    if (me.role === 'worker' && toolName(e) === 'AskUserQuestion') {
+      return { deny: `Workers never ask the user. Run \`rooms need ${me.room} ${me.item} "<question>"\` to ask, or \`rooms log\` to record an assumption, then continue or end your turn.` }
+    }
     const r = await next(e)
     if (!me.room || r.deny !== undefined || r.isError) return r
     const now = await $.clock.now()

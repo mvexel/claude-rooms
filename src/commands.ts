@@ -10,7 +10,7 @@ import { applyUserSandbox, planUserSandbox, sandboxGap } from './sandbox.ts'
 import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
-import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession } from './sessions.ts'
+import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession, WORKER_DISALLOWED_TOOLS } from './sessions.ts'
 import { isHuman, roomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
 import { repositoryIdentity, repositoryRoot, workerWorktree } from './repositories.ts'
@@ -718,7 +718,7 @@ function cmdSpawn(a: Args): string {
   ]
     .filter(Boolean)
     .join('\n')
-  const s = startSession({ prompt, cwd, name: `${who} · ${id}`, model, effort, permissionMode: flag(a, 'permission-mode') || c.worker.permissionMode })
+  const s = startSession({ prompt, cwd, name: `${who} · ${id}`, model, effort, permissionMode: flag(a, 'permission-mode') || c.worker.permissionMode, disallowedTools: WORKER_DISALLOWED_TOOLS })
   it.set('state', 'doing')
   it.set('agent', s.sessionId)
   logLine(it, by(), `set state=doing; spawned ${who} (session ${s.id}) in ${cwd}; model: ${model ?? 'default'}, effort: ${effort ?? 'default'}`)
