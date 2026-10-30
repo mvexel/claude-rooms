@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { applyDueDefaults, recordAnswer } from './answer.ts'
 import { claudeBin, config, roomsHome } from './config.ts'
 import { autocommit, commit, git, pushInBackground, withLock } from './git.ts'
-import { beat, dispatch, emit, render, take, tellWorker } from './events.ts'
+import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
 import { currentSessionId, findSession, isRunning, listSessions, startSession } from './sessions.ts'
@@ -106,6 +106,21 @@ function cmdInstall(): string {
 
 // ---- rooms and records -----------------------------------------------------
 
+// Records may refer to a repo on a disk that is not currently mounted.
+function identityOf(repo: string): string {
+  try {
+    return repositoryIdentity(repo)
+  } catch {
+    return resolve(repo)
+  }
+}
+
+// The open room for the repository at path: at most one, by the rule above.
+function roomForRepo(path: string): Room | undefined {
+  const id = identityOf(path)
+  return Room.all().find(r => !r.isClosed() && r.brief.list('repos').some(repo => identityOf(repo) === id))
+}
+
 function cmdNew(a: Args): string {
   return withLock('room-create', () => createRoom(a))
 }
@@ -120,12 +135,8 @@ function createRoom(a: Args): string {
   const identities = new Set(repos.map(repositoryIdentity))
   const open = Room.all().filter(x => !x.isClosed())
   for (const other of open) {
-    for (const repo of other.brief.list('repos')) {
-      // Records may refer to a repo on a disk that is not currently mounted.
-      let identity: string
-      try { identity = repositoryIdentity(repo) } catch { identity = resolve(repo) }
-      if (identities.has(identity)) fail(`refused: ${other.name} is still open for repo ${repo} on this machine. Only one room per repo may be open; finish and close it before starting another.`)
-    }
+    const repo = other.brief.list('repos').find(repo => identities.has(identityOf(repo)))
+    if (repo) fail(`refused: ${other.name} is still open for repo ${repo} on this machine. Only one room per repo may be open; finish and close it before starting another.`)
   }
   const otherLead = lead && open.find(x => x.leadSession() === lead)
   if (otherLead) fail(`refused: this session already leads ${otherLead.name}. One session leads one room; start a new session for a new room.`)
@@ -614,11 +625,18 @@ function cmdSpawn(a: Args): string {
   return [...warns, `${id}: ${who} started (session ${s.id}, ${model ?? 'default model'})`].join('\n')
 }
 
+// Make a session the room's lead. Without a room, the room is the open one
+// for the repository at the current directory, never another repo's. A lead
+// that is replaced is told to hand off and stop.
 function cmdLead(a: Args): string {
-  const r = room(a._[0])
+  const r = a._[0]
+    ? room(a._[0])
+    : (roomForRepo(process.cwd()) ??
+      fail(`no open room for the repository at ${process.cwd()}. Open rooms: ${Room.all().filter(x => !x.isClosed()).map(x => `${x.name} (${x.brief.list('repos').join(', ')})`).join('; ') || 'none'}. Name one (rooms lead <room>) only if the owner asked for it; otherwise start one with rooms new.`))
   const session = a._[1] || currentSessionId() || fail('no session id given and none found for this process')
   const other = Room.all().find(x => x.name !== r.name && x.leadSession() === session && !x.isClosed())
   if (other) fail(`refused: session ${session} already leads ${other.name}`)
+  if (r.isClosed()) fail(`refused: ${r.name} is closed; follow-up work gets its own room (rooms new)`)
   const b = r.brief
   const old = b.get('lead_session')
   if (old === session) return `${session} already leads ${r.name}`
@@ -627,7 +645,17 @@ function cmdLead(a: Args): string {
   b.save()
   changed(r, `lead is ${session}`)
   if (session !== currentSessionId()) emit(r.name, `You are now the lead of room ${r.name}. Load the rooms:lead skill and run rooms status ${r.name}.`)
-  return `${r.name}: lead ${old || '-'} -> ${session}`
+  const out = [`${r.name}: lead ${old || '-'} -> ${session}`]
+  if (old) out.push(`previous lead ${old}: ${tellSession(old, handoffNote(r, session))}`)
+  return out.join('\n')
+}
+
+function handoffNote(r: Room, next: string): string {
+  return [
+    `You are no longer the lead of room ${r.name}: session ${next} took it over at ${now()}.`,
+    `Hand off: send anything the record doesn't hold yet to the new lead with rooms tell ${r.name} "handoff: ...". Don't dispatch, answer or change the room's records any more.`,
+    `Then tell the owner in one line that you handed off and that this session can be closed, and end your turn.`,
+  ].join(' ')
 }
 
 // Open the room's lead to talk to it: attach if it runs in the background,
@@ -687,10 +715,13 @@ function cmdHook(a: Args): string {
   if (verb === 'poll') {
     // Hold the lease on this session's inbox (the room's for the lead, the
     // item's for a worker), and take what waits when asked to.
-    if (!me.room) return JSON.stringify(me)
+    // Mail to the session itself (a handoff) is always taken: it may be the
+    // only thing a session that just lost its room still hears.
+    const mail = render(`session ${session}`, take(mailKey(session)))
+    if (!me.room) return JSON.stringify(mail ? { ...me, events: mail } : me)
     const key = me.role === 'lead' ? me.room : `${me.room}/${me.item}`
     beat(key, session)
-    const text = has(a, 'take') ? render(key, take(key)) : ''
+    const text = [mail, has(a, 'take') ? render(key, take(key)) : ''].filter(Boolean).join('\n\n')
     return JSON.stringify({ ...me, events: text, status_line: roomStatusLine(new Room(me.room)) })
   }
   if (verb === 'stop') {
@@ -741,7 +772,9 @@ Lead
   rooms status [room] [--yield] [--brief] [--json]   exit 1 with --yield when stopping now would leave it stuck
   rooms statusline [room]                         compact status; accepts Claude status-line JSON on stdin
   rooms brief <room>                                 the binding set: PRD + agreed refinements
-  rooms set <room> <id> key=value... [--force] | pause|resume <room> | close <room> "reason" | lead <room> [session]
+  rooms set <room> <id> key=value... [--force] | pause|resume <room> | close <room> "reason"
+  rooms lead [<room> [session]]                      make this session the lead; no room: the open room for this repo.
+                                                     The previous lead is told to hand off.
   rooms tell <room> "msg" [--item Tnn]               message the lead (or a worker, via its item Log)
   rooms chat <room>                                  open the room's lead session here
 

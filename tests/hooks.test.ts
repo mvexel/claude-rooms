@@ -72,3 +72,10 @@ test('owner answers are still recorded alongside role context', async () => {
   await s.submit({ text: 'D01 b', origin: { kind: 'plugin' } })
   assert.equal(s.calls.filter(args => args[2] === 'prompt').length, 1)
 })
+
+test('mail for the session reaches submitted context, even outside a room', async () => {
+  const s = await harness()
+  s.identify({ events: '[rooms] You are no longer the lead of room demo' })
+  const e = await s.submit({ text: 'Hello' })
+  assert.deepEqual(e.context, ['[rooms] You are no longer the lead of room demo'])
+})

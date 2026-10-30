@@ -103,7 +103,8 @@ export const register: Register = on => {
     // user plugins. Add our own context at submission, which it permits.
     // Refresh even outside a room: this session may just have become a lead,
     // and the asynchronous startup poll may not have finished yet.
-    await poll($, false, true).catch(() => {})
+    const mail = await poll($, false, true).catch(() => '')
+    if (mail) e = { ...e, context: [...(e.context ?? []), mail] }
     if (me.room) {
       const place = me.role === 'lead'
         ? `You lead room ${me.room} (claude-rooms). Follow the rooms:lead skill. Updates for you arrive as "[rooms]" notes; the record, not this conversation, is the memory: when unsure, run rooms status ${me.room}.`

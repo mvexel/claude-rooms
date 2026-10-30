@@ -226,6 +226,19 @@ export function tellWorker(room: Room, itemId: string, agent: string, text: stri
   }
 }
 
+// ---- sessions ----------------------------------------------------------------
+
+// Mail for one session, whatever its role: the plugin takes it on every poll.
+// Room names can't start with "@", so the key never meets a room's.
+export const mailKey = (session: string) => `@session/${session}`
+
+// A note for a session (a lead that was replaced): its plugin takes it on its
+// next poll, so a session that has ended hears it when it is next opened.
+export function tellSession(session: string, text: string): string {
+  emit(mailKey(session), text, { dispatch: false })
+  return 'told to hand off (with the rooms plugin it hears it within a minute, or when next opened)'
+}
+
 // ---- sweep -----------------------------------------------------------------
 
 // Run by the page server every few seconds: deliver what is waiting, apply
