@@ -45,6 +45,8 @@ h1 .count { color:var(--signal); }
 .meta { display:flex; align-items:center; gap:6px; font-size:12px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-2); min-height:20px; }
 .meta .room { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .meta .sp { flex:1; }
+.meta .rid { flex:none; font-variant-numeric:tabular-nums; }
+.meta .rid::before { content:"· "; }
 .pill { display:inline-flex; align-items:center; gap:4px; border-radius:999px; padding:1px 8px; font-size:12px; font-weight:600; letter-spacing:0; text-transform:none; border:1px solid var(--line); color:var(--ink-2); white-space:nowrap; }
 .pill.old { border-color:var(--signal); color:var(--signal); }
 .pill.urgent { background:var(--critical-soft); border-color:var(--critical); color:var(--critical); }
@@ -93,7 +95,7 @@ textarea:focus, input:focus, button:focus-visible { outline:2px solid var(--acce
 .bub { font-size:14px; padding:8px 10px; border-radius:10px; background:var(--sunk); max-width:90%; }
 .bub.me { justify-self:end; background:var(--accent-soft); }
 .bub small { display:block; font-size:12px; color:var(--ink-2); margin-bottom:2px; }
-.countdown { font-size:14px; font-weight:600; color:var(--signal); }
+.countdown { font-size:14px; font-weight:600; color:var(--signal); white-space:nowrap; }
 
 /* receipt */
 .receipt { background:var(--surface); border:1.5px solid var(--ok); border-radius:var(--r-card); padding:12px 14px; margin:0 0 12px; position:relative; overflow:hidden; }
@@ -606,7 +608,7 @@ function goingAheadCard(c) {
   const left = c.due_at ? minsUntil(c.due_at) : null;
   const def = (c.options || []).find(o => o.key === c.default_key);
   const el = h("article", { class: "card", "aria-labelledby": "q-ga-" + k },
-    h("div", { class: "meta" }, glyph(c.room_status), h("span", { class: "room" }, c.room_title || c.room), h("span", { class: "sp" }), left != null ? h("span", { class: "countdown" }, left > 0 ? "in " + dur(left) : "due now") : null),
+    h("div", { class: "meta" }, glyph(c.room_status), h("span", { class: "room" }, c.room_title || c.room), h("span", { class: "rid" }, c.id), h("span", { class: "sp" }), left != null ? h("span", { class: "countdown" }, left > 0 ? "in " + dur(left) : "due now") : null),
     h("h2", { class: "q", id: "q-ga-" + k }, c.title),
     h("p", { class: "cons" }, def ? h("b", {}, `Goes ahead with ${def.key} · ${def.label}`) : null, def ? h("br") : null, c.consequence || ""));
   if (!open) el.append(h("div", { class: "row2", style: "margin:0 0 12px" },
