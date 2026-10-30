@@ -217,7 +217,7 @@ export function tellWorker(room: Room, itemId: string, agent: string, text: stri
   const sessions = listSessions()
   const s = sessions.length ? findSession(agent, sessions) : undefined
   if (!s) return 'held: the worker session is unknown'
-  if (isRunning(s, sessions)) return 'held: the worker session runs without the rooms plugin'
+  if (isRunning(s, sessions)) return 'queued: the worker session picks it up when it next polls (if it never does, it runs without the rooms plugin)'
   if (!isEnded(s, sessions)) return 'held: the worker session liveness is unknown'
   const evs = take(key)
   try {
