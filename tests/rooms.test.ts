@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Record } from '../src/record.ts'
@@ -71,6 +71,41 @@ test('an unwritable state dir fails rooms new at once, not after the lock deadli
   } finally {
     chmodSync(join(state, 'locks'), 0o700)
   }
+})
+
+test('install adds the rooms home to the sandbox only on yes; hook check warns until then; state stays out of git', () => {
+  const s = sandbox()
+  const base = resolve(s.home, '..')
+  const env: { [k: string]: string | undefined } = { ...s.env, HOME: base, CLAUDE_CONFIG_DIR: join(base, '.claude'), CLAUDE_ROOMS_HOME: join(base, 'rooms') }
+  delete env.CLAUDE_ROOMS_STATE
+  const rooms = (...args: string[]) => {
+    const r = spawnSync(process.execPath, ['--no-warnings', CLI, ...args], { env, cwd: join(base, 'proj'), encoding: 'utf8', input: '' })
+    return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }
+  }
+  const settings = join(base, '.claude', 'settings.json')
+  mkdirSync(join(base, '.claude'))
+  mkdirSync(join(base, 'proj'))
+  writeFileSync(settings, JSON.stringify({ model: 'opus', sandbox: { enabled: true, filesystem: { allowWrite: ['/opt/x'] } } }, null, 4) + '\n')
+
+  assert.match(rooms('hook', 'check').out, /sandbox can't write ~\/rooms.*rooms install/)
+  // No terminal and no --yes: the user's settings are left alone.
+  assert.match(rooms('install').out, /sandbox: not changed/)
+  assert.deepEqual(JSON.parse(readFileSync(settings, 'utf8')).sandbox.filesystem.allowWrite, ['/opt/x'])
+
+  assert.match(rooms('install', '--yes').out, /added "~\/rooms"/)
+  const after = readFileSync(settings, 'utf8')
+  assert.deepEqual(JSON.parse(after), { model: 'opus', sandbox: { enabled: true, filesystem: { allowWrite: ['/opt/x', '~/rooms'] } } })
+  assert.match(after, /^ {4}"model"/m)
+  assert.ok(readFileSync(settings + '.bak', 'utf8').includes('"/opt/x"'))
+  assert.match(rooms('install', '--yes').out, /already lets/)
+  assert.equal(rooms('hook', 'check').out, '')
+
+  assert.equal(rooms('init').code, 0)
+  assert.equal(rooms('new', 'r', 'Room', '--repo', base).code, 0, 'new')
+  assert.ok(existsSync(join(base, 'rooms', '.state', 'locks')))
+  const tracked = spawnSync('git', ['ls-files'], { cwd: join(base, 'rooms'), encoding: 'utf8' }).stdout
+  const untracked = spawnSync('git', ['status', '--porcelain'], { cwd: join(base, 'rooms'), encoding: 'utf8' }).stdout
+  assert.doesNotMatch(tracked + untracked, /\.state/)
 })
 
 test('one open room per repo per machine; other repos are allowed and paused rooms retain their repo', () => {

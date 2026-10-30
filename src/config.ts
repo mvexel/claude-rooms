@@ -10,9 +10,14 @@ export function roomsHome(): string {
   return process.env.CLAUDE_ROOMS_HOME || join(homedir(), 'rooms')
 }
 
+// Inside the rooms home (and kept out of its git), so a sandboxed session
+// needs only one writable path.
 export function stateDir(): string {
-  return process.env.CLAUDE_ROOMS_STATE || join(homedir(), '.local', 'state', 'claude-rooms')
+  return process.env.CLAUDE_ROOMS_STATE || join(roomsHome(), '.state')
 }
+
+// Where state lived before 0.3; `rooms init` moves it.
+export const legacyStateDir = () => join(homedir(), '.local', 'state', 'claude-rooms')
 
 export function claudeDir(): string {
   return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')

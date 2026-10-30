@@ -1,11 +1,12 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { applyDueDefaults, recordAnswer } from './answer.ts'
-import { claudeBin, config, roomsHome } from './config.ts'
-import { autocommit, commit, git, pushInBackground, withLock } from './git.ts'
+import { claudeBin, config, legacyStateDir, roomsHome, stateDir } from './config.ts'
+import { autocommit, commit, excludeLocal, git, pushInBackground, withLock } from './git.ts'
+import { applyUserSandbox, planUserSandbox, sandboxGap } from './sandbox.ts'
 import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
@@ -42,7 +43,7 @@ export function parseArgs(argv: string[], booleans: Set<string>): Args {
   return a
 }
 
-const BOOLEANS = new Set(['json', 'force', 'yield', 'brief', 'feature', 'research', 'review', 'premise', 'todo', 'text', 'take', 'lead', 'keep-old', 'help'])
+const BOOLEANS = new Set(['yes', 'json', 'force', 'yield', 'brief', 'feature', 'research', 'review', 'premise', 'todo', 'text', 'take', 'lead', 'keep-old', 'help'])
 const flag = (a: Args, k: string) => a.flags[k]?.at(-1) ?? ''
 const many = (a: Args, k: string) => a.flags[k] ?? []
 const has = (a: Args, k: string) => k in a.flags
@@ -88,20 +89,74 @@ function cmdInit(): string {
     git(['add', 'README.md'], home)
     git(['commit', '-q', '-m', 'rooms: init'], home)
   }
+  excludeLocal()
   return [
     `rooms home: ${home}`,
+    ...moveLegacyState(),
     git(['remote'], home).out ? 'mirror: pushes go to the remote in the background' : `mirror: none (optional: git -C ${home} remote add origin <url>)`,
     `One-shot lead turns run in ${home}: open \`claude\` there once and accept the trust prompt.`,
   ].join('\n')
 }
 
-function cmdInstall(): string {
+// State moved into the rooms home in 0.3. Move an older one over once.
+function moveLegacyState(): string[] {
+  const from = legacyStateDir()
+  if (process.env.CLAUDE_ROOMS_STATE || !existsSync(from) || existsSync(stateDir())) return []
+  try {
+    mkdirSync(roomsHome(), { recursive: true })
+    cpSync(from, stateDir(), { recursive: true })
+    rmSync(from, { recursive: true, force: true })
+    return [`state: moved ${from} to ${stateDir()}`]
+  } catch (e) {
+    return [`state: could not move ${from} to ${stateDir()}: ${(e as Error).message}`]
+  }
+}
+
+function cmdInstall(a: Args): string {
   const bin = join(homedir(), '.local', 'bin')
   mkdirSync(bin, { recursive: true })
   const target = join(bin, 'rooms')
   if (existsSync(target)) unlinkSync(target)
   symlinkSync(join(ROOT, 'cli', 'rooms.ts'), target)
-  return `linked ${target} -> ${join(ROOT, 'cli', 'rooms.ts')}`
+  return [`linked ${target} -> ${join(ROOT, 'cli', 'rooms.ts')}`, installSandbox(a)].join('\n')
+}
+
+// The user's own settings change, so the user says yes to it: at the prompt,
+// or with --yes. Without a terminal and without --yes, only say what to add.
+function installSandbox(a: Args): string {
+  const plan = planUserSandbox()
+  if (plan.error) return `sandbox: ${plan.error}`
+  if (plan.already) return `sandbox: ${plan.file} already lets sandboxed sessions write ${plan.entry}`
+  const ask = `Sandboxed Claude Code sessions can't write ${plan.entry}, where rooms keeps its records and state.\nAdd "${plan.entry}" to sandbox.filesystem.allowWrite in ${plan.file}? [y/N] `
+  let yes = has(a, 'yes')
+  if (!yes) {
+    if (!process.stdin.isTTY) return `sandbox: not changed. To let sandboxed sessions use rooms, add "${plan.entry}" to sandbox.filesystem.allowWrite in ${plan.file}, or run \`rooms install\` in a terminal.`
+    process.stdout.write(ask)
+    yes = /^y(es)?$/i.test(readLine())
+  }
+  if (!yes) return `sandbox: not changed. Rooms commands will fail in sandboxed sessions until "${plan.entry}" is in sandbox.filesystem.allowWrite.`
+  try {
+    return `sandbox: ${applyUserSandbox()}`
+  } catch (e) {
+    return `sandbox: could not update ${plan.file} (${(e as Error).message}). Run \`rooms install\` in a terminal, outside Claude Code.`
+  }
+}
+
+function readLine(): string {
+  const buf = Buffer.alloc(256)
+  let s = ''
+  for (;;) {
+    let n = 0
+    try {
+      n = readSync(0, buf, 0, buf.length, null)
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'EAGAIN') continue
+      return s
+    }
+    if (n === 0) return s
+    s += buf.toString('utf8', 0, n)
+    if (s.includes('\n')) return s.slice(0, s.indexOf('\n')).trim()
+  }
 }
 
 // ---- rooms and records -----------------------------------------------------
@@ -710,6 +765,11 @@ export function sweep(): string[] {
 
 function cmdHook(a: Args): string {
   const [verb] = a._
+  // Once per session: can its Bash sandbox write the rooms home?
+  if (verb === 'check') {
+    const gap = sandboxGap()
+    return gap ? `[rooms] Note: ${gap}. Tell the owner to run \`rooms install\` in a terminal (it asks before adding the path to their sandbox settings), then restart this session.` : ''
+  }
   const session = sessionArg(a) || fail('--session required')
   const me = whoami(session)
   if (verb === 'poll') {
@@ -750,7 +810,7 @@ function cmdHook(a: Args): string {
     }
     return done.length ? `[rooms] Recorded from the owner's message: ${done.join(', ')} (already on the cards; do not record them again).` : ''
   }
-  fail('usage: rooms hook poll|stop|prompt --session S')
+  fail('usage: rooms hook poll|stop|prompt|check --session S')
 }
 
 // ---- dispatch --------------------------------------------------------------
@@ -782,13 +842,14 @@ Worker
   rooms log <room> <Tnn> "text" | rooms need <room> <Tnn> "what is missing and why" | rooms done <room> <Tnn> [--review]
 
 Setup and plumbing
-  rooms init | install | serve [--port 8787] [--host 127.0.0.1] | sweep | whoami | hook poll|stop|prompt
+  rooms init | install [--yes] | serve [--port 8787] [--host 127.0.0.1] | sweep | whoami | hook poll|stop|prompt|check
 
 Set ROOMS_AS=<name> so Log lines carry it.`
 
 export async function run(argv: string[]): Promise<{ text: string; code: number }> {
   const a = parseArgs(argv, BOOLEANS)
   const cmd = a._.shift() ?? 'help'
+  if (cmd !== 'init') moveLegacyState()
   const ok = (text: string) => ({ text, code: 0 })
   switch (cmd) {
     case 'help':
@@ -798,7 +859,7 @@ export async function run(argv: string[]): Promise<{ text: string; code: number 
     case 'init':
       return ok(cmdInit())
     case 'install':
-      return ok(cmdInstall())
+      return ok(cmdInstall(a))
     case 'new':
       return ok(cmdNew(a))
     case 'add':

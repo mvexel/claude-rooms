@@ -50,8 +50,17 @@ export function unwritable(path: string, e: Error): string {
   const code = (e as NodeJS.ErrnoException).code
   const denied = code === 'EPERM' || code === 'EACCES' || code === 'EROFS'
   return denied
-    ? `cannot write ${path} (${code}). In a sandboxed Claude Code session, allow writes to ${roomsHome()} and ${stateDir()} (/sandbox), then retry`
+    ? `cannot write ${path} (${code}). In a sandboxed Claude Code session, the sandbox must allow writes to ${path}: run \`rooms install\` in a terminal (or use /sandbox), then retry`
     : `cannot write ${path}: ${e.message}`
+}
+
+// Machine-local files in the rooms home that git must never pick up.
+export function excludeLocal(): void {
+  const file = join(roomsHome(), '.git', 'info', 'exclude')
+  const text = existsSync(file) ? readFileSync(file, 'utf8') : ''
+  if (text.split('\n').includes('/.state/')) return
+  mkdirSync(join(roomsHome(), '.git', 'info'), { recursive: true })
+  writeFileSync(file, (text && !text.endsWith('\n') ? text + '\n' : text) + '/.state/\n')
 }
 
 function safeRead(p: string): string {
@@ -73,6 +82,7 @@ const commitFile = () => join(stateDir(), 'last-commit')
 export function commit(room: string | undefined, msg: string): { sha?: string; error?: string } {
   if (!existsSync(join(roomsHome(), '.git'))) return { error: `${roomsHome()} is not a git repo: run rooms init` }
   return withLock('commit', () => {
+    excludeLocal()
     const paths = room ? [room] : ['.']
     git(['add', '-A', '--', ...paths])
     if (git(['diff', '--cached', '--quiet']).ok) return {}

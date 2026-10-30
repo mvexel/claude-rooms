@@ -21,9 +21,11 @@ It needs nothing beyond Claude Code: workers are `claude --bg` sessions, and the
 
 ```sh
 git clone https://github.com/mvexel/claude-rooms ~/dev/claude-rooms
-~/dev/claude-rooms/cli/rooms.ts install   # links `rooms` into ~/.local/bin
+~/dev/claude-rooms/cli/rooms.ts install   # links `rooms` into ~/.local/bin; offers to allow ~/rooms in the sandbox
 rooms init                                 # creates ~/rooms (set CLAUDE_ROOMS_HOME to move it)
 ```
+
+Everything rooms writes lives under `~/rooms`. Claude Code's Bash sandbox can't write there unless your settings allow it, and a plugin can't change that. So `rooms install` asks before adding `~/rooms` to `sandbox.filesystem.allowWrite` in `~/.claude/settings.json`; it keeps a `.bak`. Run it in a terminal, not from inside Claude Code; pass `--yes` to skip the question. Sessions whose sandbox can't write `~/rooms` get a note on their first prompt about rooms.
 
 Then install the plugin so every session has the skills and hooks. At a Claude Code prompt:
 
@@ -105,7 +107,7 @@ Environment variables:
 | Variable | Default | Sets |
 |---|---|---|
 | `CLAUDE_ROOMS_HOME` | `~/rooms` | where room records live |
-| `CLAUDE_ROOMS_STATE` | `~/.local/state/claude-rooms` | inboxes, leases and receipts |
+| `CLAUDE_ROOMS_STATE` | `$CLAUDE_ROOMS_HOME/.state` | inboxes, leases and receipts (kept out of git; moved from `~/.local/state/claude-rooms` in 0.3) |
 | `ROOMS_USERS` | unset | Tailscale logins allowed to answer on the page |
 | `ROOMS_HUMAN` | unset | an extra name accepted for the `human` decider, for records that name the owner |
 | `ROOMS_AS` | unset | the name your Log lines carry |
