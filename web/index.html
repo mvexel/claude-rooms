@@ -79,6 +79,9 @@ textarea:focus, input:focus, button:focus-visible { outline:2px solid var(--acce
 .notebox small { display:block; font-size:12px; color:var(--ink-2); margin:4px 2px; }
 .primary { display:block; width:100%; min-height:52px; border:0; border-radius:var(--r-btn); background:var(--accent); color:var(--accent-ink); font-weight:600; font-size:16px; }
 .secondary { display:block; width:100%; min-height:48px; border:1.5px solid var(--line); border-radius:var(--r-btn); background:var(--surface); font-weight:600; }
+.danger:disabled { background:var(--sunk); color:var(--ink-2); }
+.danger { display:block; width:100%; min-height:48px; border:0; border-radius:var(--r-btn); background:var(--critical); color:#fff; font-weight:600; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .danger:not(:disabled) { color:#111; } }
 .row2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
 .chips { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 8px; }
 .chip { min-height:36px; padding:0 12px; border-radius:999px; border:1px solid var(--line); background:var(--sunk); font-size:14px; }
@@ -300,7 +303,7 @@ const POLL_MS = 20000;
 const S = { inbox: null, rooms: null, roomsHome: "", detail: {}, loadedAt: null, offline: false, error: "" };
 const ui = {
   openTeam: new Set(), openPlans: new Set(), planAll: new Set(load("planAll", [])), planScroll: {}, openGroups: new Set(), notes: load("notes", {}), noteOpen: new Set(), pending: {}, receipts: {},
-  todo: {}, resumeToo: {}, changed: {}, waiting: [], dismissed: new Set(load("dismissed", [])), wakeState: {},
+  todo: {}, resumeToo: {}, changed: {}, waiting: [], dismissed: new Set(load("dismissed", [])), wakeState: {}, closeTaps: {},
 };
 const etags = {}, cache = {};
 
@@ -395,11 +398,30 @@ function render() {
   off.hidden = !S.offline;
   if (S.offline) off.textContent = S.loadedAt ? `Offline. Showing ${hhmm(S.loadedAt)} data. Retrying.` : `Can't reach the rooms server (${S.error}). Retrying.`;
   app.dataset.view = a || "inbox";
+  const keep = anchors(app);
   app.replaceChildren(a === "rooms" ? roomsView() : a === "room" ? roomView(b) : a === "more" ? moreView() : inboxView());
   tabs(a === "rooms" || a === "room" ? "rooms" : a === "more" ? "more" : "inbox");
+  restore(app, keep);
   const n = needCount();
   document.title = (n ? `(${n}) ` : "") + "claude-rooms";
   favicon(n);
+}
+// A render replaces every node, so the browser can't keep its place: hold the
+// first card on screen (or the next one, if it went) where it was. A card that
+// became a short receipt above the screen is brought back into view.
+const viewTop = () => matchMedia("(min-width: 960px)").matches ? $("nav.tabs")?.getBoundingClientRect().bottom || 0 : 0;
+function anchors(app) {
+  const t = viewTop();
+  return [...app.querySelectorAll("[data-k]")].map(e => ({ k: e.dataset.k, r: e.getBoundingClientRect() })).filter(a => a.r.bottom > t);
+}
+function restore(app, keep) {
+  for (const a of keep) {
+    const e = app.querySelector(`[data-k="${CSS.escape(a.k)}"]`); if (!e) continue;
+    scrollBy(0, e.getBoundingClientRect().top - a.r.top);
+    const r = e.getBoundingClientRect(), t = viewTop();
+    if (r.height < a.r.height && r.top < t) scrollBy(0, r.top - t - 12);
+    return;
+  }
 }
 function favicon(n) {
   let l = $("link[rel=icon]"); if (!l) { l = h("link", { rel: "icon" }); document.head.append(l); }
@@ -449,7 +471,7 @@ function inboxQueue() {
   }
   if (ga.length) {
     f.append(h("div", { class: "sec" }, h("span", {}, "Going ahead unless you stop it"), h("span", {}, ga.length)));
-    ga.forEach(c => f.append(goingAheadCard(c)));
+    ga.forEach(c => { const el = goingAheadCard(c); el.dataset.k = "ga:" + key(c); f.append(el); });
   }
   if (later.length) {
     const open = ui.openGroups.has("later");
@@ -505,7 +527,7 @@ async function setPaused(room, paused) {
 }
 
 // ---------------------------------------------------------------- cards
-function cardOrReceipt(c) { const r = ui.receipts[key(c)]; return r ? receipt(c, r) : card(c); }
+function cardOrReceipt(c) { const r = ui.receipts[key(c)], el = r ? receipt(c, r) : card(c); el.dataset.k = key(c); return el; }
 function metaRow(c) {
   return h("div", { class: "meta" }, glyph(c.room_status), h("span", { class: "room" }, (c.room_title || c.room) + (c.room_status_note ? " · " + c.room_status_note : "")), h("span", { class: "sp" }),
     c.urgent ? h("span", { class: "pill urgent" }, "Urgent") : null,
@@ -745,6 +767,24 @@ function openNotYet(c, o) {
     h("button", { class: "primary", style: "margin-top:10px", onclick: () => { setNote(k, ta.value.trim()); $("#sheet").close(); choose(c, o); } }, "Send"));
   setTimeout(() => ta.focus(), 50);
 }
+// Closing can't be undone from the page: three taps within 3 s, counted in ui
+// so a render in between doesn't reset it. Only a room with nothing open closes.
+function closeRoomButton(r) {
+  const n = ui.closeTaps[r.name]?.n || 0, open = r.work?.open_count || 0;
+  if (open) return h("button", { class: "danger", disabled: true, title: "Finish or drop the open items first" }, `Close · ${open} open`);
+  const label = ["Close the room", "Tap twice more to close", "Tap once more to close"][n];
+  return h("button", { class: "danger", "aria-live": "polite", onclick: () => {
+    vib(); const t = ui.closeTaps[r.name]; clearTimeout(t?.timer);
+    if (n + 1 >= 3) { delete ui.closeTaps[r.name]; return closeRoom(r.name); }
+    ui.closeTaps[r.name] = { n: n + 1, timer: setTimeout(() => { delete ui.closeTaps[r.name]; render(); }, 3000) };
+    render();
+  } }, label);
+}
+async function closeRoom(room) {
+  const r = await postJSON(`rooms/${encodeURIComponent(room)}/close`, {}).catch(e => ({ ok: false, error: e.message }));
+  toast(r.ok ? "Room closed" : "Not closed: " + r.error);
+  refresh();
+}
 function confirmPause(r) {
   sheet(h("div", { class: "top" }, h("h2", {}, `Pause ${r.title}?`), closeBtn()),
     h("p", {}, "Agents finish their current step, write it down and stop. Nothing new starts until you resume. Cards stay answerable."),
@@ -937,8 +977,9 @@ function roomView(name) {
   if ((r.decided || []).length) dec.append(sec("Decided recently", r.decided.length), h("div", { class: "items" }, r.decided.map(d => h("button", { class: "it", onclick: () => openRecord(name, d.id) },
     h("span", { class: "id" }, d.id), h("span", { class: "tt" }, d.title, h("small", {}, [d.went_ahead ? "went ahead with " + d.answer_label : d.answer_label, d.by, d.at].filter(Boolean).join(" · "), d.reversed ? " · REVERSED " + d.reversed : ""))))));
   if (r.lead_note?.text) lead.append(sec(`From ${L?.name && L.name !== "lead" ? L.name : "the lead"}`, r.lead_note.at ? String(r.lead_note.at).slice(0, 16).replace("T", " ") : ""), h("div", { class: "note sec-body" }, r.lead_note.text));
-  if (r.status !== "done" && !r.standing) lead.append(h("div", { style: "margin-top:22px" },
-    r.paused ? (r.action?.kind === "resume" ? null : h("button", { class: "secondary", onclick: () => setPaused(name, false) }, "Resume the team")) : h("button", { class: "secondary", onclick: () => confirmPause(r) }, "Pause the team")));
+  if (r.status !== "done" && !r.standing) lead.append(h("div", { class: "row2", style: "margin-top:22px" },
+    r.paused ? (r.action?.kind === "resume" ? null : h("button", { class: "secondary", onclick: () => setPaused(name, false) }, "Resume the team")) : h("button", { class: "secondary", onclick: () => confirmPause(r) }, "Pause the team"),
+    closeRoomButton(r)));
   return f;
 }
 

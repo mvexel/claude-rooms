@@ -459,15 +459,19 @@ function cmdBinding(r: Room): string {
 
 function cmdClose(a: Args): string {
   const [name, reason] = a._
-  const r = room(name)
-  const open = r.items().filter(i => OPEN_ITEM.has(i.get('state')))
-  if (open.length && !has(a, 'force')) fail(`${name} has open items: ${open.map(i => i.get('id')).join(' ')}. Finish or drop them first, or --force`)
+  return closeRoom(room(name), reason || fail('give a one-line reason'), has(a, 'force'))
+}
+
+// Forced, the open items stay as they are and the reason names them.
+export function closeRoom(r: Room, reason: string, force = false): string {
+  const open = r.items().filter(i => OPEN_ITEM.has(i.get('state'))).map(i => i.get('id'))
+  if (open.length && !force) fail(`${r.name} has open items: ${open.join(' ')}. Finish or drop them first, or --force`)
   const b = r.brief
-  b.set('closed', `${now()} ${reason || fail('give a one-line reason')}`)
+  b.set('closed', `${now()} ${reason}${open.length ? ` (left open: ${open.join(' ')})` : ''}`)
   b.save()
   commit(r.name, `${r.name}: closed`)
   pushInBackground()
-  return `${name} closed`
+  return `${r.name} closed`
 }
 
 export function setPaused(r: Room, on: boolean): string {
