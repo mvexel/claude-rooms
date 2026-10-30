@@ -263,3 +263,33 @@ test('status bar follows the session, dependencies, owner blocks and pause', () 
   });
   assert.equal(outside.stdout, '');
 });
+
+test("lead without a room takes this repo's room, never another's, and the old lead is told to hand off", () => {
+  const s = sandbox()
+  const repo = (name: string) => {
+    const dir = join(s.home, '..', name)
+    mkdirSync(join(dir, 'sub'), { recursive: true })
+    spawnSync('git', ['init', '-q', dir])
+    return dir
+  }
+  const mine = repo('mine')
+  s.ok('new', 'other', 'Other', '--repo', repo('theirs'), '--session', 'other-lead')
+  s.ok('new', 'r', 'R', '--repo', mine)
+  const lead = (cwd: string) => {
+    const r = spawnSync(process.execPath, ['--no-warnings', CLI, 'lead'], { cwd, env: { ...s.env, CLAUDE_ROOMS_SESSION: 'new-lead' }, encoding: 'utf8' })
+    return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }
+  }
+  const elsewhere = lead(repo('unrelated'))
+  assert.notEqual(elsewhere.code, 0)
+  assert.match(elsewhere.err, /no open room for the repository.*other \(.*r \(/)
+  const took = lead(join(mine, 'sub'))
+  assert.equal(took.code, 0, took.err)
+  assert.match(took.out, /r: lead lead-session-1 -> new-lead\nprevious lead lead-session-1: told to hand off/)
+  assert.equal(s.ok('whoami', '--session', 'new-lead'), 'lead in r')
+  assert.equal(s.ok('whoami', '--session', 'other-lead'), 'lead in other')
+  const old = JSON.parse(s.ok('hook', 'poll', '--session', 'lead-session-1'))
+  assert.equal(old.room, undefined)
+  assert.match(old.events, /no longer the lead of room r: session new-lead took it over.*rooms tell r "handoff/)
+  assert.equal(JSON.parse(s.ok('hook', 'poll', '--session', 'lead-session-1')).events, undefined)
+  assert.match(lead(mine).out, /new-lead already leads r/)
+})
