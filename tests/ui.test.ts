@@ -57,5 +57,22 @@ test('plan starts collapsed, opens once, keeps state across redraws and opens re
   assert.equal(redrawn.children[1].hidden, false)
   assert.equal(redrawn.children[1].children[1].scrollLeft, 80)
   toggle.handlers.click(); toggle.handlers.click()
-  assert.equal(body.children.length, 2)
+  assert.equal(body.children.length, 3)
+})
+
+const text = (n: any): string => n == null ? '' : n.nodeType === 3 ? n.text : (n.children || []).map(text).join('')
+test('finished steps hide behind one stub by default; per-room toggle shows them; stages list keeps dependencies', () => {
+  const p = page(), items = [item('A', [], 'done'), item('X', [], 'dropped'), item('B', ['A', 'X']), item('C', ['B'])]
+  p.ui.openPlans.add('demo')
+  let body = p.planView('demo', items).children[1], canvas = body.children[1].children[0], list = body.children[2]
+  const nodes = canvas.children.filter((c: any) => c.tagName === 'button')
+  assert.equal(nodes.length, 3) // stub, B, C
+  assert.match(text(nodes[0]), /1 done · 1 dropped/)
+  assert.equal(canvas.children[0].children.filter((c: any) => c.tagName === 'path').length, 2) // stub→B, B→C
+  assert.match(text(list), /2 finished steps hidden/)
+  assert.match(text(list), /Stage 1.*Work B.*After 2 finished.*Stage 2.*Work C.*After B/)
+  p.ui.planAll.add('demo')
+  body = p.planView('demo', items).children[1]; canvas = body.children[1].children[0]; list = body.children[2]
+  assert.equal(canvas.children.filter((c: any) => c.tagName === 'button').length, 4)
+  assert.match(text(list), /After A ✓, X \(dropped\)/)
 })

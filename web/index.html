@@ -191,6 +191,24 @@ textarea:focus, input:focus, button:focus-visible { outline:2px solid var(--acce
 .plan-node.doing .node-state { color:var(--accent); }
 .plan-node.done .node-state { color:var(--ok); }
 .plan-node.blocked .node-state { color:var(--signal); }
+.plan-stub { border-style:dashed; background:var(--sunk); justify-content:center; }
+.plan-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:0 14px 12px; }
+.plan-bar .plan-help { flex:1; min-width:180px; padding:0; }
+/* Narrow screens get the plan as stages (dependency depth); wide ones get the graph. */
+.plan-scroll, .g-only { display:none; }
+.plan-list { border-top:1px solid var(--line); }
+.plan-stage { display:flex; justify-content:space-between; padding:14px 14px 6px; background:var(--bg); border-top:1px solid var(--line); font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-2); }
+.plan-list > :first-child { border-top:0; }
+.plan-it .tt small.sum { color:var(--ink); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+.plan-it .node-state { flex:none; font-size:12px; font-weight:600; color:var(--ink-2); }
+.plan-it.doing .node-state { color:var(--accent); }
+.plan-it.done .node-state { color:var(--ok); }
+.plan-it.blocked .node-state { color:var(--signal); }
+.plan-it.done .tt, .plan-it.dropped .tt { color:var(--ink-2); }
+.plan-gone { display:flex; align-items:center; gap:10px; padding:8px 14px; min-height:48px; font-size:14px; color:var(--ink-2); background:var(--bg); }
+.plan-gone span { flex:1; }
+.plan-gone button { background:none; border:0; min-height:44px; padding:0 4px; color:var(--accent); font-weight:500; font-size:15px; }
+.col-side { display:none; }
 
 /* more */
 .seg { display:inline-grid; grid-auto-flow:column; background:var(--sunk); border-radius:10px; padding:3px; gap:2px; }
@@ -227,6 +245,40 @@ dialog::backdrop { background:rgba(0,0,0,.4); }
 .skel { height:140px; border-radius:var(--r-card); background:var(--sunk); margin:0 0 12px; }
 .sec-body { white-space:pre-wrap; overflow-wrap:anywhere; font-size:15px; margin:0 0 8px; }
 .err { color:var(--critical); font-size:14px; margin:6px 0 0; }
+
+/* Wide screens: tabs move to a top bar, the inbox gets a rooms column, the room
+   view splits work from context, and the plan spans the full width as a graph. */
+@media (min-width: 960px) {
+  body { padding-bottom:32px; }
+  main { max-width:1180px; padding:calc(var(--tab-h) + 16px) 28px 0; }
+  main[data-view="rooms"], main[data-view="more"] { max-width:760px; }
+  .offline { top:var(--tab-h); }
+  nav.tabs { top:0; bottom:auto; border-top:0; border-bottom:1px solid var(--line); padding-bottom:0; }
+  nav.tabs .in { max-width:1180px; padding:0 20px; display:flex; gap:4px; }
+  main[data-view="rooms"] ~ nav.tabs .in, main[data-view="more"] ~ nav.tabs .in { max-width:760px; }
+  nav.tabs a { flex-direction:row; gap:8px; padding:0 14px; font-size:14px; }
+  nav.tabs a[aria-current="page"]::after { content:""; position:absolute; left:10px; right:10px; bottom:-1px; height:2px; background:var(--accent); }
+  nav.tabs svg { width:20px; height:20px; }
+  nav.tabs .badge { position:static; }
+  .toast { bottom:24px; }
+  dialog { max-width:680px; margin:auto; border-radius:16px; max-height:85vh; }
+  .grab { display:none; }
+  .sh { padding:16px 24px 24px; }
+  .cols { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:28px; align-items:start; }
+  .col-main { max-width:680px; }
+  .col-side { display:block; position:sticky; top:calc(var(--tab-h) + 16px); }
+  .col-side > .sec:first-child { margin-top:8px; }
+  .col-side .rrow .tx small:not(.when) { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; }
+  .room-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) 380px; column-gap:28px; align-items:start; }
+  .room-work { grid-area:1 / 1 / 2 / 3; }
+  .room-team { grid-area:1 / 3; }
+  .room-grid > .plan { grid-area:2 / 1 / 3 / -1; }
+  .room-lead { grid-area:3 / 1 / 4 / 3; }
+  .room-dec { grid-area:3 / 3; }
+  .plan-scroll { display:block; max-height:calc(100vh - var(--tab-h) - 140px); min-height:240px; }
+  .g-only { display:inline; }
+  .plan-list, .l-only { display:none; }
+}
 </style>
 </head>
 <body>
@@ -247,7 +299,7 @@ const POLL_MS = 20000;
 
 const S = { inbox: null, rooms: null, roomsHome: "", detail: {}, loadedAt: null, offline: false, error: "" };
 const ui = {
-  openTeam: new Set(), openPlans: new Set(), planScroll: {}, openGroups: new Set(), notes: load("notes", {}), noteOpen: new Set(), pending: {}, receipts: {},
+  openTeam: new Set(), openPlans: new Set(), planAll: new Set(load("planAll", [])), planScroll: {}, openGroups: new Set(), notes: load("notes", {}), noteOpen: new Set(), pending: {}, receipts: {},
   todo: {}, resumeToo: {}, changed: {}, waiting: [], dismissed: new Set(load("dismissed", [])), wakeState: {},
 };
 const etags = {}, cache = {};
@@ -342,6 +394,7 @@ function render() {
   const off = $("#offline");
   off.hidden = !S.offline;
   if (S.offline) off.textContent = S.loadedAt ? `Offline. Showing ${hhmm(S.loadedAt)} data. Retrying.` : `Can't reach the rooms server (${S.error}). Retrying.`;
+  app.dataset.view = a || "inbox";
   app.replaceChildren(a === "rooms" ? roomsView() : a === "room" ? roomView(b) : a === "more" ? moreView() : inboxView());
   tabs(a === "rooms" || a === "room" ? "rooms" : a === "more" ? "more" : "inbox");
   const n = needCount();
@@ -371,7 +424,14 @@ function pulse() {
     .filter(([s]) => p[s]).map(([s, w]) => h("span", {}, h("b", {}, p[s]), " " + w));
   return h("button", { class: "pulse", onclick: () => location.hash = "#/rooms", "aria-label": "Room status, open Rooms" }, bits.length ? bits : h("span", {}, "No live rooms"));
 }
+// On wide screens the queue keeps a readable width and the rooms sit beside it.
 function inboxView() {
+  const q = inboxQueue(), live = (S.rooms || []).filter(r => !(r.status === "done" && !r.cards) && !r.standing).sort((a, b) => (ORDER[a.status] ?? 9) - (ORDER[b.status] ?? 9));
+  return h("div", { class: "cols" }, h("div", { class: "col-main" }, q),
+    h("aside", { class: "col-side", "aria-label": "Rooms" }, h("div", { class: "sec" }, h("span", {}, "Rooms"), h("span", {}, live.length)),
+      live.length ? h("div", { class: "rlist" }, live.map(roomRow)) : h("p", { class: "small", style: "margin:0 2px" }, "No live rooms.")));
+}
+function inboxQueue() {
   const f = document.createDocumentFragment();
   if (!S.inbox) { f.append(h("h1", {}, "Needs you"), h("div", { class: "skel" }), h("div", { class: "skel" })); return f; }
   const list = cards(), n = needCount();
@@ -734,21 +794,41 @@ function planLayout(items) {
   }
   return columns;
 }
+const PLAN_STATES = { todo: "To do", doing: "Moving", review: "In review", blocked: "Blocked", done: "✓ Done", dropped: "Dropped" };
+const finished = i => i.state === "done" || i.state === "dropped";
+// "Left to do" (the default) hides finished steps; their place in the graph is one
+// stub node, and in the stages list a count on each step that waited on them.
 function planView(room, items) {
   const open = ui.openPlans.has(room), done = items.filter(i => i.state === "done").length;
+  const all = ui.planAll.has(room), shown = all ? items : items.filter(i => !finished(i)), gone = items.filter(i => !shown.includes(i));
+  const byId = new Map(items.map(i => [i.id, i])), isGone = id => gone.includes(byId.get(id));
+  const fullDeps = i => (i.after || []).length ? "After " + i.after.map(id => id + ({ done: " ✓", dropped: " (dropped)" }[byId.get(id)?.state] || "")).join(", ") : "No dependencies";
+  const shortDeps = i => {
+    const a = i.after || [], left = a.filter(id => !isGone(id)), n = a.length - left.length;
+    return !a.length ? "No dependencies" : "After " + [left.join(", "), n ? `${n} finished` : ""].filter(Boolean).join(" · ");
+  };
   const bodyId = "plan-" + room;
   const panel = h("section", { class: "plan", "aria-label": "Execution plan" });
   const toggle = h("button", { class: "plan-toggle", "aria-expanded": String(open), "aria-controls": bodyId },
     h("span", { class: "tt" }, h("b", {}, "View plan"), h("small", {}, `${items.length} steps · ${done} done`)),
     h("span", { class: "chev", "aria-hidden": "true" }, open ? "⌄" : "›"));
   const body = h("div", { id: bodyId, hidden: !open });
+  const setAll = v => { v ? ui.planAll.add(room) : ui.planAll.delete(room); save("planAll", [...ui.planAll]); delete ui.planScroll[room]; render(); };
   let built = false;
   function build() {
     if (built) return;
     built = true;
-    const columns = planLayout(items), positions = new Map();
-    columns.forEach((col, x) => col.forEach((i, y) => positions.set(i.id, { x: 16 + x * 264, y: 16 + y * 174 })));
-    const width = columns.length * 264 - 16, height = Math.max(...columns.map(c => c.length)) * 174 + 8;
+    const seg = items.some(finished) ? h("div", { class: "seg", role: "group", "aria-label": "Steps shown" },
+      h("button", { "aria-pressed": String(!all), onclick: () => all && setAll(false) }, "Left to do"),
+      h("button", { "aria-pressed": String(all), onclick: () => !all && setAll(true) }, "All steps")) : null;
+    body.append(h("div", { class: "plan-bar" }, h("p", { class: "plan-help" },
+      h("span", { class: "g-only" }, "Follow the arrows from left to right. Select a step for details."),
+      h("span", { class: "l-only" }, "Each stage waits only on earlier ones. Select a step for details.")), seg));
+    if (!shown.length) { body.append(h("p", { class: "plan-help" }, "Every step is finished.")); return; }
+    const columns = planLayout(shown), off = gone.length ? 1 : 0, positions = new Map();
+    columns.forEach((col, x) => col.forEach((i, y) => positions.set(i.id, { x: 16 + (x + off) * 264, y: 16 + y * 174 })));
+    const stubAt = { x: 16, y: 16 };
+    const width = (columns.length + off) * 264 - 16, height = Math.max(off, ...columns.map(c => c.length)) * 174 + 8;
     const canvas = h("div", { class: "plan-canvas", style: `width:${width}px;height:${height}px` });
     const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
     svg.setAttribute("class", "plan-links"); svg.setAttribute("width", width); svg.setAttribute("height", height); svg.setAttribute("aria-hidden", "true");
@@ -756,25 +836,40 @@ function planView(room, items) {
     const defs = document.createElementNS(ns, "defs"), marker = document.createElementNS(ns, "marker");
     for (const [k, v] of Object.entries({ id: markerId, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse" })) marker.setAttribute(k, v);
     const tip = document.createElementNS(ns, "path"); tip.setAttribute("d", "M 0 0 L 10 5 L 0 10 z"); tip.setAttribute("fill", "currentColor"); marker.append(tip); defs.append(marker); svg.append(defs);
-    for (const i of items) for (const dep of i.after || []) {
-      const from = positions.get(dep), to = positions.get(i.id);
-      if (!from) continue;
-      const path = document.createElementNS(ns, "path"), x1 = from.x + 216, y1 = from.y + 75, x2 = to.x, y2 = to.y + 75;
-      path.setAttribute("d", `M ${x1} ${y1} C ${x1 + 24} ${y1}, ${x2 - 24} ${y2}, ${x2 - 4} ${y2}`);
-      path.setAttribute("fill", "none"); path.setAttribute("stroke", "currentColor"); path.setAttribute("stroke-width", "1.25"); path.setAttribute("marker-end", `url(#${markerId})`); svg.append(path);
+    for (const i of shown) {
+      // one arrow from the stub, however many finished steps it stands for
+      const froms = (i.after || []).map(dep => positions.get(dep)).filter(Boolean);
+      if ((i.after || []).some(isGone)) froms.push(stubAt);
+      for (const from of froms) {
+        const to = positions.get(i.id), path = document.createElementNS(ns, "path"), x1 = from.x + 216, y1 = from.y + 75, x2 = to.x, y2 = to.y + 75;
+        path.setAttribute("d", `M ${x1} ${y1} C ${x1 + 24} ${y1}, ${x2 - 24} ${y2}, ${x2 - 4} ${y2}`);
+        path.setAttribute("fill", "none"); path.setAttribute("stroke", "currentColor"); path.setAttribute("stroke-width", "1.25"); path.setAttribute("marker-end", `url(#${markerId})`); svg.append(path);
+      }
     }
     canvas.append(svg);
-    const states = { todo: "To do", doing: "Moving", review: "In review", blocked: "Blocked", done: "✓ Done", dropped: "Dropped" };
+    const dropped = gone.filter(i => i.state === "dropped").length;
+    if (gone.length) canvas.append(h("button", { class: "plan-node plan-stub", style: `left:${stubAt.x}px;top:${stubAt.y}px`, "aria-label": `${gone.length} finished steps hidden. Show all steps.`, onclick: () => setAll(true) },
+      h("span", { class: "node-title" }, `✓ ${gone.length - dropped} done` + (dropped ? ` · ${dropped} dropped` : "")),
+      h("span", { class: "node-summary" }, "Hidden. Arrows from here mean the step waited on finished work. Select to show all steps.")));
     for (const i of columns.flat()) {
-      const p = positions.get(i.id), deps = (i.after || []).length ? "After " + i.after.join(", ") : "No dependencies";
+      const p = positions.get(i.id), deps = fullDeps(i);
       canvas.append(h("button", { class: "plan-node " + i.state, style: `left:${p.x}px;top:${p.y}px`,
-        "aria-label": `${i.id}: ${i.title}. ${states[i.state] || i.state}. ${deps}. ${i.summary || ""} Open work item.`,
+        "aria-label": `${i.id}: ${i.title}. ${PLAN_STATES[i.state] || i.state}. ${deps}. ${i.summary || ""} Open work item.`,
         title: deps, onclick: () => openRecord(room, i.id) },
-        h("span", { class: "meta" }, i.id, h("span", { class: "node-state" }, states[i.state] || i.state)),
+        h("span", { class: "meta" }, i.id, h("span", { class: "node-state" }, PLAN_STATES[i.state] || i.state)),
         h("span", { class: "node-title" }, i.title), h("span", { class: "node-summary" }, i.summary || "Open for work item details")));
     }
     const scroll = h("div", { class: "plan-scroll", tabindex: "0", role: "region", "aria-label": "Plan dependency graph", onscroll: e => { ui.planScroll[room] = [e.target.scrollLeft, e.target.scrollTop]; } }, canvas);
-    body.append(h("p", { class: "plan-help" }, "Follow the arrows from left to right. Scroll to explore; select a step for details."), scroll);
+    // The same layout read top to bottom: one stage per graph column.
+    const list = h("div", { class: "plan-list", role: "region", "aria-label": "Plan by stage" },
+      gone.length ? h("div", { class: "plan-gone" }, h("span", {}, `✓ ${gone.length} finished step${gone.length > 1 ? "s" : ""} hidden`), h("button", { onclick: () => setAll(true) }, "Show")) : null,
+      columns.map((col, n) => [h("div", { class: "plan-stage" }, h("span", {}, `Stage ${n + 1}`), h("span", {}, `${col.length} step${col.length > 1 ? "s" : ""}`)),
+        col.map(i => h("button", { class: "it plan-it " + i.state, title: fullDeps(i), onclick: () => openRecord(room, i.id),
+          "aria-label": `${i.id}: ${i.title}. ${PLAN_STATES[i.state] || i.state}. ${fullDeps(i)}. Open work item.` },
+          h("span", { class: "id" }, i.id),
+          h("span", { class: "tt" }, i.title, i.summary ? h("small", { class: "sum" }, i.summary) : null, h("small", {}, all ? fullDeps(i) : shortDeps(i))),
+          h("span", { class: "node-state" }, PLAN_STATES[i.state] || i.state)))]));
+    body.append(scroll, list);
     requestAnimationFrame(() => { const pos = ui.planScroll[room]; if (pos) { scroll.scrollLeft = pos[0]; scroll.scrollTop = pos[1]; } });
   }
   toggle.addEventListener("click", () => {
@@ -802,20 +897,24 @@ function roomView(name) {
     st ? h("p", { class: st.error ? "err" : "small", style: "margin:8px 0 0 32px" }, st.text) : null, act));
   if (r.phase) f.append(h("p", { class: "phase" }, r.phase));
   for (const a of r.attention || []) f.append(h("p", { class: a.level === "loud" ? "err" : "small", style: "margin:4px 2px" }, (a.level === "loud" ? "▲ " : "· ") + a.sentence));
+  // Work, team, plan, context: the page order on a phone. Wide screens put work and
+  // team side by side, the plan across the full width, then the lead's note beside decisions.
+  const work = h("div", { class: "room-work" }), team = h("div", { class: "room-team" }), dec = h("div", { class: "room-dec" }), lead = h("div", { class: "room-lead" });
+  f.append(h("div", { class: "room-grid" }, work, team, r.plan?.items?.length ? planView(name, r.plan.items) : null, dec, lead));
   const mine = cards().filter(c => c.room === name);
   if (mine.length) {
-    f.append(h("div", { class: "sec" }, h("span", {}, "Needs you"), h("span", {}, mine.length)));
-    mine.slice(0, 2).forEach(c => f.append(cardOrReceipt(c)));
-    if (mine.length > 2) f.append(h("button", { class: "group", onclick: () => { ui.openGroups.add(name); location.hash = "#/"; } }, h("span", { class: "gtx" }, `${mine.length - 2} more in Needs you`), h("span", { class: "chev" }, "›")));
+    work.append(h("div", { class: "sec" }, h("span", {}, "Needs you"), h("span", {}, mine.length)));
+    mine.slice(0, 2).forEach(c => work.append(cardOrReceipt(c)));
+    if (mine.length > 2) work.append(h("button", { class: "group", onclick: () => { ui.openGroups.add(name); location.hash = "#/"; } }, h("span", { class: "gtx" }, `${mine.length - 2} more in Needs you`), h("span", { class: "chev" }, "›")));
   }
   const w = r.work || {}, sec = (t, n) => h("div", { class: "sec" }, h("span", {}, t), h("span", {}, n));
   const moving = w.moving || [], review = w.review || [], ready = w.ready_unstaffed || [], waiting = w.waiting || [], onYou = w.blocked_on_you || [];
-  if (moving.length) f.append(sec("Moving now", moving.length), itemRows(name, moving, i => `${i.owner_name || "unassigned"} · started ${ago(i.age_min || 0)}${i.age_min ? " ago" : ""}`));
-  else if (r.status !== "done") f.append(sec("Moving now", 0), h("p", { class: "small", style: "margin:0 2px" }, "No one is working in this room."));
-  if (review.length) f.append(sec("In review", review.length), itemRows(name, review, i => i.owner_name || ""));
-  if (ready.length) f.append(sec("Ready, no agent", ready.length), itemRows(name, ready, i => i.owner_name ? `for ${i.owner_name}` : "no owner yet"));
-  if (waiting.length) f.append(sec("Waiting", waiting.length), itemRows(name, waiting, i => [i.owner_name, i.waits_on ? "waits on " + i.waits_on : i.after?.length ? "after " + i.after.join(", ") : ""].filter(Boolean).join(" · ")));
-  if (onYou.length) f.append(sec("Blocked on you", onYou.length), itemRows(name, onYou, i => i.owner_name || ""));
+  if (moving.length) work.append(sec("Moving now", moving.length), itemRows(name, moving, i => `${i.owner_name || "unassigned"} · started ${ago(i.age_min || 0)}${i.age_min ? " ago" : ""}`));
+  else if (r.status !== "done") work.append(sec("Moving now", 0), h("p", { class: "small", style: "margin:0 2px" }, "No one is working in this room."));
+  if (review.length) work.append(sec("In review", review.length), itemRows(name, review, i => i.owner_name || ""));
+  if (ready.length) work.append(sec("Ready, no agent", ready.length), itemRows(name, ready, i => i.owner_name ? `for ${i.owner_name}` : "no owner yet"));
+  if (waiting.length) work.append(sec("Waiting", waiting.length), itemRows(name, waiting, i => [i.owner_name, i.waits_on ? "waits on " + i.waits_on : i.after?.length ? "after " + i.after.join(", ") : ""].filter(Boolean).join(" · ")));
+  if (onYou.length) work.append(sec("Blocked on you", onYou.length), itemRows(name, onYou, i => i.owner_name || ""));
   if (r.team?.length || r.team_roster) {
     const assigned = (r.team || []).filter(m => m.name !== "Unassigned");
     const open = ui.openTeam.has(name), bodyId = "team-" + name;
@@ -832,14 +931,13 @@ function roomView(name) {
       toggle.setAttribute("aria-expanded", String(next)); toggle.querySelector(".chev").textContent = next ? "⌄" : "›";
     } }, h("span", { class: "tt" }, h("b", {}, "Team"), h("small", {}, assigned.length ? assigned.map(m => m.name).join(" · ") : "Work awaiting an owner")),
       h("span", { class: "chev", "aria-hidden": "true" }, open ? "⌄" : "›"));
-    f.append(h("section", { class: "plan", "aria-label": "Team and assignments" }, toggle, body));
+    team.append(h("section", { class: "plan", "aria-label": "Team and assignments" }, toggle, body));
   }
-  if (r.plan?.items?.length) f.append(planView(name, r.plan.items));
-  if (w.done_count) f.append(h("p", { class: "small", style: "margin:8px 2px" }, `${w.done_count} item${w.done_count > 1 ? "s" : ""} done`));
-  if ((r.decided || []).length) f.append(sec("Decided recently", r.decided.length), h("div", { class: "items" }, r.decided.map(d => h("button", { class: "it", onclick: () => openRecord(name, d.id) },
+  if (w.done_count) team.append(h("p", { class: "small", style: "margin:8px 2px" }, `${w.done_count} item${w.done_count > 1 ? "s" : ""} done`));
+  if ((r.decided || []).length) dec.append(sec("Decided recently", r.decided.length), h("div", { class: "items" }, r.decided.map(d => h("button", { class: "it", onclick: () => openRecord(name, d.id) },
     h("span", { class: "id" }, d.id), h("span", { class: "tt" }, d.title, h("small", {}, [d.went_ahead ? "went ahead with " + d.answer_label : d.answer_label, d.by, d.at].filter(Boolean).join(" · "), d.reversed ? " · REVERSED " + d.reversed : ""))))));
-  if (r.lead_note?.text) f.append(sec(`From ${L?.name && L.name !== "lead" ? L.name : "the lead"}`, r.lead_note.at ? String(r.lead_note.at).slice(0, 16).replace("T", " ") : ""), h("div", { class: "note sec-body" }, r.lead_note.text));
-  if (r.status !== "done" && !r.standing) f.append(h("div", { style: "margin-top:22px" },
+  if (r.lead_note?.text) lead.append(sec(`From ${L?.name && L.name !== "lead" ? L.name : "the lead"}`, r.lead_note.at ? String(r.lead_note.at).slice(0, 16).replace("T", " ") : ""), h("div", { class: "note sec-body" }, r.lead_note.text));
+  if (r.status !== "done" && !r.standing) lead.append(h("div", { style: "margin-top:22px" },
     r.paused ? (r.action?.kind === "resume" ? null : h("button", { class: "secondary", onclick: () => setPaused(name, false) }, "Resume the team")) : h("button", { class: "secondary", onclick: () => confirmPause(r) }, "Pause the team")));
   return f;
 }

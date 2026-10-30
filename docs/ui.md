@@ -24,6 +24,8 @@ A card has `room, room_title, room_status, room_status_note?, id, kind (decision
 | `POST /api/rooms/{room}/pause` | `{paused: bool}` | Pauses or resumes the room and tells the lead. |
 | `POST /api/rooms/{room}/wake` | `{note?}` | Asks the lead to get the room moving. |
 
-The room’s **View plan** disclosure shows a scrollable dependency graph of all recorded items, including done and dropped steps. Summaries use the item’s Summary section, then its preamble, then Acceptance criteria (up to 400 characters). Each step opens its full record. The disclosure and graph scroll position survive polling.
+The room’s **View plan** disclosure shows every recorded item, including done and dropped steps. From 960px wide it is a scrollable dependency graph across the full width; narrower, the same layout reads as a list of stages (dependency depth), each step naming what it waits on. By default it shows only steps left to do: finished steps collapse into one stub (the graph’s first node, the list’s first row), and a step that waited on them says so. The “Left to do / All steps” choice is remembered per room. Summaries use the item’s Summary section, then its preamble, then Acceptance criteria (up to 400 characters). Each step opens its full record. The disclosure and graph scroll position survive polling.
+
+From 960px wide the tabs become a top bar, the inbox gets a rooms column beside the queue, the room view puts work beside the team, then the plan, then the lead’s note beside recent decisions, and sheets open as centred dialogs.
 
 Room detail also includes `team_roster` (the brief’s Team section) and `team[{name,items}]`. Team assignments carry item state, optional tier and session state; members without open assignments remain visible. The Team disclosure shows the roster, lead status and linked assignments.
