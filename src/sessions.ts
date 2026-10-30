@@ -62,10 +62,12 @@ function parentPid(pid: number): number | undefined {
   }
 }
 
-// The Claude Code session this process runs under: walk up the process tree
-// to a pid that has a registry entry in ~/.claude/sessions/<pid>.json.
+// The Claude Code session this process runs under: the id Claude Code hands
+// its tool processes, else walk up the process tree to a pid that has a
+// registry entry in ~/.claude/sessions/<pid>.json (`ps` may be sandboxed).
 export function currentSessionId(): string | undefined {
   if (process.env.CLAUDE_ROOMS_SESSION) return process.env.CLAUDE_ROOMS_SESSION
+  if (process.env.CLAUDE_CODE_SESSION_ID) return process.env.CLAUDE_CODE_SESSION_ID
   let pid: number | undefined = process.pid
   for (let i = 0; i < 20 && pid && pid > 1; i++) {
     const file = join(claudeDir(), 'sessions', `${pid}.json`)

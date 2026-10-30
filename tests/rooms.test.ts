@@ -293,3 +293,11 @@ test("lead without a room takes this repo's room, never another's, and the old l
   assert.equal(JSON.parse(s.ok('hook', 'poll', '--session', 'lead-session-1')).events, undefined)
   assert.match(lead(mine).out, /new-lead already leads r/)
 })
+
+test('the session id Claude Code gives its tools identifies the session', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'R')
+  const env = { ...s.env, CLAUDE_ROOMS_SESSION: '', CLAUDE_CODE_SESSION_ID: 'lead-session-1' }
+  const r = spawnSync(process.execPath, ['--no-warnings', CLI, 'whoami'], { env, encoding: 'utf8' })
+  assert.equal(r.stdout.trim(), 'lead in r', r.stderr)
+})
