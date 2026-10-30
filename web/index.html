@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-title" content="Rooms">
 <title>claude-rooms</title>
 <style>
 :root {
@@ -295,6 +300,7 @@ dialog::backdrop { background:rgba(0,0,0,.4); }
 
 const BASE = location.pathname.replace(/[^/]*$/, "");
 const api = p => BASE + "api/" + p;
+if (typeof navigator === "object" && "serviceWorker" in navigator) navigator.serviceWorker.register(BASE + "sw.js").catch(() => {});
 const POLL_MS = 20000;
 
 const S = { inbox: null, rooms: null, roomsHome: "", detail: {}, loadedAt: null, offline: false, error: "" };
