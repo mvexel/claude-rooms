@@ -634,7 +634,7 @@ function cmdStatus(a: Args): { text: string; code: number } {
     const st = roomState(r, { sessions, yielding: has(a, 'yield') })
     if (has(a, 'yield') && st.status === 'stuck') stuck = true
     let t = statusText(r, st, has(a, 'brief'))
-    if (has(a, 'yield') && st.ready.length) t += `\n  ${st.ready.join(' ')} ready with no agent: dispatch before you end your turn`
+    if (has(a, 'yield') && st.dispatchable.length) t += `\n  ${st.dispatchable.join(' ')} ready with no agent: dispatch before you end your turn`
     if (has(a, 'yield') && st.status === 'stuck') t += `\n  STUCK if you stop now: dispatch the next item, put a real question to the owner, set waiting:/resume: in now-head.md, or close the room.`
     return t
   })

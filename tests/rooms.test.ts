@@ -272,6 +272,41 @@ test('status: a room with ready work and nobody on it is stuck; --yield exits 1'
   assert.equal(JSON.parse(s.ok('status', 'r', '--json'))[0].status, 'idle')
 })
 
+test('status --yield: items held by an owner card or with waiting= are not ready-with-no-agent', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'R')
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  s.ok('add', 'r', 'Other', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 1)
+  s.ok('set', 'r', 'T01', 'waiting=vendor')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 1) // T02 is still free
+  assert.match(s.rooms('status', 'r', '--yield').out, /T02 ready with no agent/)
+  assert.doesNotMatch(s.rooms('status', 'r', '--yield').out, /T01 ready/)
+  s.ok('set', 'r', 'T02', 'waiting=vendor')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 0)
+  s.ok('set', 'r', 'T01', 'waiting=')
+  s.ok('set', 'r', 'T02', 'waiting=')
+  s.ok('ask', 'r', 'Ship?', '-o', 'yes', '-o', 'no', '--door', 'one', '--blocks', 'T01,T02')
+  const y = s.rooms('status', 'r', '--yield')
+  assert.equal(y.code, 0)
+  assert.doesNotMatch(y.out, /ready with no agent/)
+})
+
+test('status --yield: a held item with a dependent is not stuck', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'R')
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  s.ok('add', 'r', 'After', '--cap', '1', '--acc', 'works', '--in', 'spec', '--dep', 'T01')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 1) // nothing held: stuck
+  s.ok('ask', 'r', 'Ship?', '-o', 'yes', '-o', 'no', '--door', 'one', '--blocks', 'T01')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 0)
+  s.ok('set', 'r', 'T01', 'waiting=vendor')
+  s.ok('answer', 'r', 'D01', 'a')
+  const y = s.rooms('status', 'r', '--yield')
+  assert.equal(y.code, 0)
+  assert.equal(JSON.parse(s.ok('status', 'r', '--json'))[0].status, 'waiting_outside')
+})
+
 test('events: one delivery for many, receipts follow them', () => {
   const s = sandbox()
   s.ok('new', 'r', 'R')
