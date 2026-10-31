@@ -1,0 +1,22 @@
+# claude-rooms on Komodo. The host home is bind-mounted at the same path so
+# ~/rooms, ~/.claude, repos and worktrees keep their paths. node, claude and
+# rooms come from that home, not from the image.
+services:
+  rooms:
+    build: .
+    image: claude-rooms
+    init: true
+    restart: unless-stopped
+    # Host network: rooms serve stays on 127.0.0.1 (loopback only, no
+    # ROOMS_USERS needed to bind), and `tailscale serve` on the host reaches it
+    # with loopback peers:  tailscale serve --bg --set-path /rooms http://127.0.0.1:8788
+    network_mode: host
+    user: "${ROOMS_UID:-1000}:${ROOMS_GID:-1000}"
+    working_dir: ${ROOMS_HOME:-/home/mvexel}
+    environment:
+      HOME: ${ROOMS_HOME:-/home/mvexel}
+      PATH: ${ROOMS_HOME:-/home/mvexel}/.local/node/bin:${ROOMS_HOME:-/home/mvexel}/.local/bin:/usr/local/bin:/usr/bin:/bin
+      ROOMS_USERS: ${ROOMS_USERS:-}
+    volumes:
+      - ${ROOMS_HOME:-/home/mvexel}:${ROOMS_HOME:-/home/mvexel}
+    command: ["rooms", "serve", "--port", "${ROOMS_PORT:-8788}", "--host", "127.0.0.1"]
