@@ -125,7 +125,7 @@ export function startArgs(o: StartOptions): string[] {
   if (o.model) args.push('--model', o.model)
   if (o.effort) args.push('--effort', o.effort)
   if (o.permissionMode) args.push('--permission-mode', o.permissionMode)
-  if (o.disallowedTools) args.push('--disallowedTools', o.disallowedTools)
+  if (o.disallowedTools) args.push(`--disallowedTools=${o.disallowedTools}`) // bound with '=': the flag is variadic and would swallow the prompt
   args.push(o.prompt)
   return args
 }
