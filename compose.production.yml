@@ -7,6 +7,11 @@ services:
     image: claude-rooms
     init: true
     restart: unless-stopped
+    # Caps for the container. The host's user-<uid>.slice limits do not apply
+    # to Docker containers, so the cap has to be set here. Defaults fit lima
+    # (16 GB, 8 vCPU) shared with the public sites.
+    mem_limit: ${ROOMS_MEM_LIMIT:-8g}
+    cpus: ${ROOMS_CPUS:-4}
     # Host network: rooms serve stays on 127.0.0.1, and `tailscale serve` on the
     # host reaches it with loopback peers:
     #   tailscale serve --bg --set-path /rooms http://127.0.0.1:8788
