@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { backend } from './backend.ts'
 import { LEASE_FRESH_MS, claudeBin, config, roomsHome, stateDir } from './config.ts'
 import { withLock } from './git.ts'
 import { Room } from './room.ts'
@@ -35,7 +36,7 @@ type Receipts = { [id: string]: { delivery: Delivery; at: string; error?: string
 
 function readReceipts(): Receipts {
   try {
-    return JSON.parse(readFileSync(receiptsFile(), 'utf8'))
+    return JSON.parse(backend().read(receiptsFile()) ?? '{}')
   } catch {
     return {}
   }
@@ -48,9 +49,7 @@ export function setReceipt(ids: string[], delivery: Delivery, error?: string): v
     const cutoff = Date.now() - 7 * 86_400_000
     for (const [k, v] of Object.entries(r)) if (Date.parse(v.at) < cutoff) delete r[k]
     for (const id of ids) r[id] = { delivery, at: stamp(), ...(error ? { error } : {}) }
-    mkdirSync(stateDir(), { recursive: true })
-    writeFileSync(receiptsFile() + '.tmp', JSON.stringify(r))
-    renameSync(receiptsFile() + '.tmp', receiptsFile())
+    backend().write(receiptsFile(), JSON.stringify(r))
   })
 }
 
@@ -63,8 +62,7 @@ export function receipts(ids: string[]): { id: string; delivery: Delivery | 'unk
 
 export function emit(room: string, text: string, opts: { dispatch?: boolean } = {}): string {
   const ev: Event = { id: randomUUID().slice(0, 12), at: stamp(), text: text.trim() }
-  mkdirSync(roomState(room), { recursive: true })
-  appendFileSync(inboxFile(room), JSON.stringify(ev) + '\n')
+  backend().append(inboxFile(room), JSON.stringify(ev) + '\n')
   setReceipt([ev.id], 'saved')
   if (opts.dispatch !== false) {
     try {
@@ -77,8 +75,7 @@ export function emit(room: string, text: string, opts: { dispatch?: boolean } = 
 }
 
 export function pending(room: string): Event[] {
-  if (!existsSync(inboxFile(room))) return []
-  return readFileSync(inboxFile(room), 'utf8')
+  return (backend().read(inboxFile(room)) ?? '')
     .split('\n')
     .filter(Boolean)
     .map(l => JSON.parse(l) as Event)
@@ -86,19 +83,10 @@ export function pending(room: string): Event[] {
 
 // Take the whole inbox at once: many events become one delivery.
 export function take(room: string): Event[] {
-  const file = inboxFile(room)
-  if (!existsSync(file)) return []
-  const claimed = `${file}.${process.pid}.taking`
-  try {
-    renameSync(file, claimed)
-  } catch {
-    return []
-  }
-  const evs = readFileSync(claimed, 'utf8')
+  const evs = (backend().claim(inboxFile(room)) ?? '')
     .split('\n')
     .filter(Boolean)
     .map(l => JSON.parse(l) as Event)
-  unlinkSync(claimed)
   setReceipt(evs.map(e => e.id), 'lead_read')
   return evs
 }
@@ -112,13 +100,12 @@ export function render(room: string, evs: Event[]): string {
 // ---- lease -----------------------------------------------------------------
 
 export function beat(room: string, session: string): void {
-  mkdirSync(roomState(room), { recursive: true })
-  writeFileSync(leaseFile(room), JSON.stringify({ session, at: Date.now() }))
+  backend().write(leaseFile(room), JSON.stringify({ session, at: Date.now() }))
 }
 
 export function lease(room: string): { session: string; at: number } | undefined {
   try {
-    return JSON.parse(readFileSync(leaseFile(room), 'utf8'))
+    return JSON.parse(backend().read(leaseFile(room)) ?? '')
   } catch {
     return undefined
   }
@@ -173,6 +160,8 @@ export function turnRunning(room: string): number | undefined {
   }
 }
 
+// turn.json and turns.log describe a process on this machine, so they stay
+// plain local files, outside the backend.
 // A one-shot lead: reads the record, handles the events, exits. The record,
 // not a transcript, is its memory.
 function startTurn(room: Room, evs: Event[]): void {
@@ -224,7 +213,7 @@ export function tellWorker(room: Room, itemId: string, agent: string, text: stri
     resumeStopped(s, render(key, evs), sessions)
     return 'the worker session was resumed with it'
   } catch (e) {
-    for (const ev of evs) appendFileSync(inboxFile(key), JSON.stringify(ev) + '\n')
+    for (const ev of evs) backend().append(inboxFile(key), JSON.stringify(ev) + '\n')
     return `held: ${(e as Error).message}`
   }
 }

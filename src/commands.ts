@@ -3,6 +3,7 @@ import { type Dirent, appendFileSync, cpSync, existsSync, mkdirSync, readFileSyn
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { backend, loadBackend } from './backend.ts'
 import { applyDueDefaults, recordAnswer } from './answer.ts'
 import { claudeBin, config, legacyStateDir, roomsHome, scratchDir, stateDir } from './config.ts'
 import { autocommit, commit, excludeLocal, git, pushInBackground, unwritable, withLock } from './git.ts'
@@ -229,7 +230,7 @@ function createRoom(a: Args): string {
   }
   const otherLead = lead && open.find(x => x.leadSession() === lead)
   if (otherLead) fail(`refused: this session already leads ${otherLead.name}. One session leads one room; start a new session for a new room.`)
-  for (const d of ['items', 'decisions', 'notes']) mkdirSync(join(r.dir, d), { recursive: true })
+  // items/, decisions/ and notes/ appear with their first file
   const brief = new Record(join(r.dir, 'BRIEF.md'), '---\n---\n')
   for (const [k, v] of [
     ['title', title],
@@ -258,7 +259,7 @@ function createRoom(a: Args): string {
   ])
     head.set(k, v)
   head.save()
-  if (has(a, 'feature')) writeFileSync(join(r.dir, 'PRD.md'), readFileSync(join(ROOT, 'templates', 'prd.md'), 'utf8').replace('{title}', title).replace('{now}', now()))
+  if (has(a, 'feature')) backend().write(join(r.dir, 'PRD.md'), readFileSync(join(ROOT, 'templates', 'prd.md'), 'utf8').replace('{title}', title).replace('{now}', now()))
   changed(r, 'new room')
   return [
     `created ${r.dir}${lead ? ` · lead session ${lead}` : ' · no lead session: events run one-shot lead turns until one claims it (rooms lead)'}`,
@@ -478,7 +479,7 @@ function cmdPrd(a: Args): string {
   if (verb !== 'review') fail('usage: rooms prd <room> review')
   const prd = r.prd() ?? fail(`${name} has no PRD.md (rooms new --feature makes one)`)
   if (prd.get('status') === 'agreed') fail('the PRD is already agreed; changes are refinements (rooms rf)')
-  const lines = readFileSync(prd.path, 'utf8').split('\n').length
+  const lines = (backend().read(prd.path) ?? '').split('\n').length
   if (lines > 130) fail(`PRD.md is ${lines} lines; the limit is 120. Move approach and research to notes/`)
   if (!/^Lead:[ \t]*\S/m.test(prd.section('Sign-off'))) fail('sign the PRD first: a "Lead: <name>, <date>" line in Sign-off')
   const open = prd.section('Open questions').split('\n').filter(l => /^\s*([-*]|\d+\.)\s+\S/.test(l) && !/[TDAP]\d{2,}/.test(l))
@@ -570,7 +571,7 @@ function cmdRf(a: Args): string {
 function cmdBinding(r: Room): string {
   if (!r.prd()) return ''
   const rfs = r.refinements().filter(x => x.get('status') === 'agreed')
-  return [`BINDING: PRD.md${rfs.length ? ' + ' + rfs.map(x => x.get('id')).join(', ') : ''} (later refinements win)`, readFileSync(join(r.dir, 'PRD.md'), 'utf8'), ...rfs.map(x => x.toString())].join('\n\n')
+  return [`BINDING: PRD.md${rfs.length ? ' + ' + rfs.map(x => x.get('id')).join(', ') : ''} (later refinements win)`, backend().read(join(r.dir, 'PRD.md')) ?? '', ...rfs.map(x => x.toString())].join('\n\n')
 }
 
 function cmdClose(a: Args): string {
@@ -898,6 +899,7 @@ Setup and plumbing
 Set ROOMS_AS=<name> so Log lines carry it.`
 
 export async function run(argv: string[]): Promise<{ text: string; code: number }> {
+  await loadBackend()
   const a = parseArgs(argv, BOOLEANS)
   const cmd = a._.shift() ?? 'help'
   if (cmd !== 'init') moveLegacyState()
