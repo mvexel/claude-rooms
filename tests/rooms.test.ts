@@ -467,6 +467,22 @@ test('prune lists done items\' worktrees and removes only merged, clean ones', (
   assert.notEqual(git('branch', '--list', 'rooms/r/t04'), '')
 })
 
+test('spawn with a code: line that is not "<branch> at <worktree>" fails naming that line', () => {
+  const s = sandbox()
+  const repo = join(s.home, 'proj')
+  gitRepo(s, repo)
+  s.ok('new', 'r', 'Room', '--repo', repo)
+  const brief = Record.load(join(s.home, 'r', 'BRIEF.md'))
+  brief.set('code', 'please use the integration branch')
+  brief.save()
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  const r = s.rooms('spawn', 'r', 'T01', '--repo', repo)
+  assert.notEqual(r.code, 0)
+  assert.match(r.err, /code: line in r's BRIEF\.md is "please use the integration branch"; expected "code: <branch> at <worktree>"/)
+  assert.doesNotMatch(r.err, /invalid reference/)
+  assert.equal(existsSync(`${realpathSync(repo)}-r-t01`), false)
+})
+
 test('prune removes a branch merged into the integration branch only, not the checkout HEAD', () => {
   const s = sandbox()
   const repo = join(s.home, 'proj')

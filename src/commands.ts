@@ -55,6 +55,16 @@ function fail(msg: string): never {
   throw new Error(msg)
 }
 
+// The integration branch named by the brief's code: line ("<branch> at <worktree>").
+// Free text there would otherwise reach git as a base ref and fail as "invalid reference".
+function codeBranch(r: Room): string | undefined {
+  const code = r.brief.get('code').trim()
+  if (!code) return undefined
+  const m = /^(\S+) at \S/.exec(code)
+  if (!m) fail(`code: line in ${r.name}'s BRIEF.md is "${code}"; expected "code: <branch> at <worktree>" (e.g. code: rooms-maint/int at /home/me/dev/claude-rooms-int)`)
+  return m[1]
+}
+
 function room(name: string | undefined): Room {
   return new Room(name ?? fail('room name required')).must()
 }
@@ -692,7 +702,7 @@ function cmdSpawn(a: Args): string {
   const repo = flag(a, 'repo')
   // Research items read; they get no worktree.
   if (repo && it.get('kind') !== 'research') {
-    const base = flag(a, 'base') || r.brief.get('code').split(' ')[0] || 'HEAD'
+    const base = flag(a, 'base') || codeBranch(r) || 'HEAD'
     const wt = workerWorktree(repo, r.name, id)
     cwd = wt.path
     const branch = wt.branch
