@@ -74,6 +74,13 @@ export function doingSince(item: Record): string {
   return ''
 }
 
+// Ready items that are held: named in an open owner card's blocks=, or with waiting= set.
+export function heldItems(room: Room, ready: string[]): Set<string> {
+  const blocked = new Set(openCards(room).flatMap(c => c.list('blocks')))
+  const byId = new Map(room.items().map(i => [i.get('id'), i]))
+  return new Set(ready.filter(id => blocked.has(id) || !!byId.get(id)?.get('waiting')))
+}
+
 export function readyUnstaffed(room: Room): string[] {
   const items = room.items()
   const done = new Set(items.filter(i => ['done', 'dropped'].includes(i.get('state'))).map(i => i.get('id')))
@@ -145,6 +152,8 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
   const cycle = findCycle(items)
   if (cycle) warnings.push(`dependency cycle: ${cycle.join(' → ')}`)
   const ready = readyUnstaffed(room)
+  const held = heldItems(room, ready)
+  const dispatchable = ready.filter(id => !held.has(id))
   const waitingEvents = pending(room.name)
 
   const base = { needsYou, moving, ready, warnings }
@@ -175,8 +184,8 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
       ? `${plural(waitingEvents.length, 'update')} for the lead can't reach it: its session is open but not checking in, or has not polled for a while (no rooms plugin there, rooms serve older than the plugin: restart it, or wait for its next poll).`
       : !moving.length && !leadWorking && finishedQuiet.length
         ? `${finishedQuiet.join(', ')} finished without reporting back, and nothing else is running.`
-        : !moving.length && !leadWorking && ready.length
-          ? `${plural(ready.length, 'item is', 'items are')} ready but nobody is working on them.`
+        : !moving.length && !leadWorking && dispatchable.length
+          ? `${plural(dispatchable.length, 'item is', 'items are')} ready but nobody is working on them.`
           : ''
   if (stuckWhy) return { ...base, status: 'stuck', sentence: stuckWhy, action: 'wake', line: `STUCK: ${stuckWhy}` }
   if (cards) return { ...base, status: 'needs_you', sentence: `${cardSentence}.`, line: `Needs you: ${needsYou.map(d => d.get('id')).join(' ')}` }
@@ -195,10 +204,11 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
     return { ...base, status: 'moving', sentence, line: `Moving: ${[...moving, ...(leadWorking ? ['lead'] : [])].join(' ')}` }
   }
   const open = items.filter(i => OPEN_ITEM.has(i.get('state')))
-  if (open.length) {
+  if (open.length && !open.every(i => held.has(i.get('id')))) {
     const why = `${plural(open.length, 'open item')}, but nothing is running or waiting on you.`
     return { ...base, status: 'stuck', sentence: why, action: 'wake', line: `STUCK: ${why}` }
   }
+  if (open.length) return { ...base, status: 'waiting_outside', sentence: `${held.size === 1 ? '1 item is' : `${held.size} items are`} held (waiting).`, line: 'Held' }
   return { ...base, status: 'idle', sentence: 'Nothing open; the room waits for its next piece of work.', line: 'Idle' }
 }
 
