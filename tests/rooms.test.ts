@@ -395,6 +395,8 @@ test("lead without a room takes this repo's room, never another's, and the old l
   const took = lead(join(mine, 'sub'))
   assert.equal(took.code, 0, took.err)
   assert.match(took.out, /r: lead lead-session-1 -> new-lead\nprevious lead lead-session-1: told to hand off/)
+  assert.match(took.out, /transcript is not on this host; starting fresh from the record/)
+  assert.match(took.out, /now-head:\n---/)
   assert.equal(s.ok('whoami', '--session', 'new-lead'), 'lead in r')
   assert.equal(s.ok('whoami', '--session', 'other-lead'), 'lead in other')
   const old = JSON.parse(s.ok('hook', 'poll', '--session', 'lead-session-1'))
