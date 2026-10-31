@@ -62,6 +62,7 @@ whose completion the owner confirms. Todo cards also accept a note with Done.
 
 - Options are short (under 80 characters, five at most). Reasoning goes in `--why`. Always give your pick and the reason for it.
 - Fill in `--blocks` so the card sorts by what it holds up.
+- A card you no longer need (the plan changed) is taken off with `rooms withdraw <room> <id> "<reason>"`; never answer it yourself.
 - When the owner answers in chat ("D05 b"), the plugin records it before you read it. If they answer in words that aren't a letter, record your reading: `rooms answer <room> D05 b --quote "<their words>"`.
 - The owner's steer in chat changes premises: write it as a P or D record, then tell the affected workers.
 
