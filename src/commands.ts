@@ -480,7 +480,28 @@ function cmdAnswer(a: Args): string {
   }
   if (!choice) fail('usage: rooms answer <room> <id> <letter|note> [--note ...] [--quote "owner\'s words"] | --reply "text"')
   if (d.get('status') === 'final') fail(`${id} is already answered`)
+  if (d.get('status') === 'withdrawn') fail(`${id} was withdrawn; nothing to answer`)
   return recordAnswer(r, id, { choice, by: flag(a, 'by') || 'human', quote: flag(a, 'quote'), note: flag(a, 'note') })
+}
+
+// Withdraw an open card the lead no longer needs: it leaves the page and Needs
+// you, and the record stays with the reason.
+function cmdWithdraw(a: Args): string {
+  const [name, id, ...rest] = a._
+  const r = room(name)
+  if (!id || !/^[DAP]\d/.test(id)) fail('usage: rooms withdraw <room> <Dnn|An|Pn> "<reason>"')
+  const d = r.find(id)
+  const reason = rest.join(' ').replace(/\s+/g, ' ').trim() || fail('say why the card is withdrawn')
+  if (!['open', 'provisional'].includes(d.get('status'))) fail(`${id} is ${d.get('status')}; only an open card can be withdrawn`)
+  d.set('status', 'withdrawn')
+  d.set('withdrawn', now())
+  d.set('updated', now())
+  d.appendTo('Withdrawn', `- ${hhmm()} ${by()}: ${reason}`)
+  if (d.sections.some(s => s[0] === 'Log')) logLine(d, by(), `withdrawn: ${reason}`)
+  d.save()
+  changed(r, `${id} withdrawn`)
+  const blocked = d.list('blocks')
+  return `${id}: withdrawn (${reason})${blocked.length ? `. It still lists ${blocked.join(', ')} in blocks; decide those items yourself` : ''}`
 }
 
 function cmdPrd(a: Args): string {
@@ -904,6 +925,7 @@ Lead
   rooms spawn <room> <Tnn> [--tier T] [--repo <path> [--base <branch>]] [--name N] [--brief "..."]
   rooms spawn <room> --lead                         start a background lead session for the room
   rooms answer <room> <id> <letter|note> [--quote "owner's words"] [--note "..."] | --reply "text"
+  rooms withdraw <room> <Dnn|An> "<reason>"          take an open card off the page; the record keeps the reason
   rooms prd <room> review | rooms rf <room> new "<title>" --touches FR4 | rooms rf <room> RFnn review [--quote ...]
   rooms status [room] [--yield] [--brief] [--json]   exit 1 with --yield when stopping now would leave it stuck
   rooms statusline [room]                         compact status; accepts Claude status-line JSON on stdin
@@ -948,6 +970,8 @@ export async function run(argv: string[]): Promise<{ text: string; code: number 
       return ok(cmdSpawn(a))
     case 'set':
       return ok(cmdSet(a))
+    case 'withdraw':
+      return ok(cmdWithdraw(a))
     case 'log':
       return ok(cmdLog(a))
     case 'need':

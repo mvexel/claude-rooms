@@ -533,3 +533,32 @@ test('a worker whose session is waiting for input is not moving: the room is stu
     else process.env.CLAUDE_ROOMS_HOME = previous
   }
 })
+
+test('a withdrawn card leaves Needs you and the page, keeps its reason, and cannot be answered', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'R')
+  s.ok('add', 'r', 'Build', '--acc', 'Works', '--in', 'brief')
+  s.ok('ask', 'r', 'Approve?', '-o', 'Yes', '-o', 'No', '--door', 'one', '--blocks', 'T01')
+  assert.match(s.ok('statusline', 'r'), /1 need you/)
+  const previous = process.env.CLAUDE_ROOMS_HOME
+  process.env.CLAUDE_ROOMS_HOME = s.home
+  try {
+    const room = new Room('r')
+    assert.deepEqual(roomState(room, { sessions: [] }).needsYou.map(d => d.get('id')), ['D01'])
+    assert.match(s.ok('withdraw', 'r', 'D01', 'no longer needed'), /D01: withdrawn \(no longer needed\)/)
+    assert.deepEqual(roomState(room, { sessions: [] }).needsYou, [])
+    assert.doesNotMatch(s.ok('statusline', 'r'), /need you/)
+    const text = readFileSync(s.file('r', 'decisions', 'D01'), 'utf8')
+    assert.match(text, /status: withdrawn/)
+    assert.match(text, /## Withdrawn\n- \d\d:\d\dZ lead: no longer needed/)
+    const answer = s.rooms('answer', 'r', 'D01', 'a')
+    assert.notEqual(answer.code, 0)
+    assert.match(answer.err, /withdrawn/)
+    const again = s.rooms('withdraw', 'r', 'D01', 'again')
+    assert.notEqual(again.code, 0)
+    assert.match(again.err, /only an open card/)
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_ROOMS_HOME
+    else process.env.CLAUDE_ROOMS_HOME = previous
+  }
+})
