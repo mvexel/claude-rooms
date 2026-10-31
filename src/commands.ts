@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { hallMonitor } from './monitor.ts'
 import { type Dirent, appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -665,6 +666,9 @@ function cmdStatus(a: Args): { text: string; code: number } {
     const st = roomState(r, { sessions, yielding: has(a, 'yield') })
     if (has(a, 'yield') && st.status === 'stuck') stuck = true
     let t = statusText(r, st, has(a, 'brief'))
+    const hm = hallMonitor(r, sessions)
+    if (hm.clones.length) t += `\n  hall monitor: too many items wait on one role; clone for ${hm.clones.map(c => `${c.item} (${c.name})`).join(', ')} (${hm.running}/${hm.max} threads; rooms spawn names the clone)`
+    if (hm.queued.length) t += `\n  hall monitor: ${hm.queued.join(' ')} wait for a free thread (${hm.running}/${hm.max})`
     if (has(a, 'yield') && st.dispatchable.length) t += `\n  ${st.dispatchable.join(' ')} ready with no agent: dispatch before you end your turn`
     if (has(a, 'yield') && st.status === 'stuck') t += `\n  STUCK if you stop now: dispatch the next item, put a real question to the owner, set waiting:/resume: in now-head.md, or close the room.`
     return t
@@ -739,7 +743,9 @@ function cmdSpawn(a: Args): string {
   } catch (e) {
     fail(unwritable(scratch, e as Error))
   }
-  const who = flag(a, 'name') || it.get('owner') || 'worker'
+  const plan = hallMonitor(r)
+  if (plan.running >= plan.max && !has(a, 'force')) fail(`${r.name} already runs ${plan.running} workers (hallMonitor.maxThreads ${plan.max}); wait for one to finish, raise maxThreads in the config, or --force`)
+  const who = flag(a, 'name') || plan.clones.find(c => c.item === id)?.name || it.get('owner') || 'worker'
   const prompt = [
     `You are ${who} on item ${id} (${it.get('title')}) in room ${r.name}. Load the rooms:worker skill first.`,
     `Your item: ${it.path}`,

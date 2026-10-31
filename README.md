@@ -118,9 +118,12 @@ Who gets asked what:
   "worker": { "permissionMode": "auto", "tier": "standard" },
   "lead": { "permissionMode": "auto", "allowedTools": ["Bash(rooms *)", "Read", "Edit", "Write"] },
   "provisionalMinutes": 60,
-  "commitDebounceMs": 60000
+  "commitDebounceMs": 60000,
+  "hallMonitor": { "maxThreads": 4, "queueLimit": 1 }
 }
 ```
+
+The hall monitor clones a team member who has too many parallel-ready items waiting: past `queueLimit` waiting items for one `owner` role, `rooms status` names clones ("dev 2") and `rooms spawn` starts them under that name. `maxThreads` caps running workers per room; spawn refuses beyond it unless `--force`.
 
 Environment variables:
 

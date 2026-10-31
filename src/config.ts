@@ -43,6 +43,7 @@ export type Config = {
   lead: { permissionMode: string; model?: string; allowedTools: string[] }
   provisionalMinutes: number // a two-way default applies this long after it is set, at least 30
   commitDebounceMs: number
+  hallMonitor: { maxThreads: number; queueLimit: number } // parallel workers per room; items that may wait on one role before it is cloned
 }
 
 // Staffing tiers follow the old rubric; deep work needs the owner's ask, so it
@@ -57,6 +58,7 @@ const DEFAULTS: Config = {
   lead: { permissionMode: 'auto', allowedTools: ['Bash(rooms *)', 'Read', 'Edit', 'Write'] },
   provisionalMinutes: 60,
   commitDebounceMs: 60_000,
+  hallMonitor: { maxThreads: 4, queueLimit: 1 },
 }
 
 let cached: Config | undefined
@@ -72,6 +74,7 @@ export function config(): Config {
     tiers: { ...DEFAULTS.tiers, ...user.tiers },
     worker: { ...DEFAULTS.worker, ...user.worker },
     lead: { ...DEFAULTS.lead, ...user.lead },
+    hallMonitor: { ...DEFAULTS.hallMonitor, ...user.hallMonitor },
   }
   return cached
 }

@@ -562,3 +562,15 @@ test('a withdrawn card leaves Needs you and the page, keeps its reason, and cann
     else process.env.CLAUDE_ROOMS_HOME = previous
   }
 })
+
+test('hall monitor names clones for a backlog and caps threads', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'Room', '--repo', s.home)
+  for (const t of ['A', 'B', 'C', 'D']) s.ok('add', 'r', t, '--owner', 'dev', '--cap', '1', '--acc', 'x', '--in', 'y')
+  assert.match(s.rooms('status', 'r').out, /clone for T02 \(dev 2\), T03 \(dev 3\), T04 \(dev 4\)/)
+  const cfg = join(s.home, '..', 'cfg.json')
+  writeFileSync(cfg, JSON.stringify({ hallMonitor: { maxThreads: 2 } }))
+  const r = spawnSync(process.execPath, ['--no-warnings', CLI, 'status', 'r'], { env: { ...s.env, CLAUDE_ROOMS_CONFIG: cfg }, encoding: 'utf8' })
+  assert.match(r.stdout, /clone for T02 \(dev 2\)/)
+  assert.match(r.stdout, /T03 T04 wait for a free thread/)
+})
