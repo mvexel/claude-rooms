@@ -5,6 +5,10 @@ services:
   rooms:
     build: .
     image: claude-rooms
+    # Local image, never in a registry: build it on deploy instead of pulling.
+    # Without this, Komodo's `docker compose pull` fails with "pull access
+    # denied for claude-rooms".
+    pull_policy: build
     init: true
     restart: unless-stopped
     # Caps for the container. The host's user-<uid>.slice limits do not apply
