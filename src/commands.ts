@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { backend, loadBackend } from './backend.ts'
 import { applyDueDefaults, recordAnswer } from './answer.ts'
-import { claudeBin, config, legacyStateDir, roomsHome, scratchDir, stateDir } from './config.ts'
+import { claudeBin, claudeDir, config, legacyStateDir, roomsHome, scratchDir, stateDir } from './config.ts'
 import { autocommit, commit, excludeLocal, git, pushInBackground, unwritable, withLock } from './git.ts'
 import { applyUserSandbox, planUserSandbox, sandboxGap } from './sandbox.ts'
 import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
@@ -53,6 +53,16 @@ const csv = (s: string) => s.split(',').map(x => x.trim()).filter(Boolean)
 
 function fail(msg: string): never {
   throw new Error(msg)
+}
+
+// The integration branch named by the brief's code: line ("<branch> at <worktree>").
+// Free text there would otherwise reach git as a base ref and fail as "invalid reference".
+function codeBranch(r: Room): string | undefined {
+  const code = r.brief.get('code').trim()
+  if (!code) return undefined
+  const m = /^(\S+) at \S/.exec(code)
+  if (!m) fail(`code: line in ${r.name}'s BRIEF.md is "${code}"; expected "code: <branch> at <worktree>" (e.g. code: rooms-maint/int at /home/me/dev/claude-rooms-int)`)
+  return m[1]
 }
 
 function room(name: string | undefined): Room {
@@ -634,7 +644,7 @@ function cmdStatus(a: Args): { text: string; code: number } {
     const st = roomState(r, { sessions, yielding: has(a, 'yield') })
     if (has(a, 'yield') && st.status === 'stuck') stuck = true
     let t = statusText(r, st, has(a, 'brief'))
-    if (has(a, 'yield') && st.ready.length) t += `\n  ${st.ready.join(' ')} ready with no agent: dispatch before you end your turn`
+    if (has(a, 'yield') && st.dispatchable.length) t += `\n  ${st.dispatchable.join(' ')} ready with no agent: dispatch before you end your turn`
     if (has(a, 'yield') && st.status === 'stuck') t += `\n  STUCK if you stop now: dispatch the next item, put a real question to the owner, set waiting:/resume: in now-head.md, or close the room.`
     return t
   })
@@ -692,7 +702,7 @@ function cmdSpawn(a: Args): string {
   const repo = flag(a, 'repo')
   // Research items read; they get no worktree.
   if (repo && it.get('kind') !== 'research') {
-    const base = flag(a, 'base') || r.brief.get('code').split(' ')[0] || 'HEAD'
+    const base = flag(a, 'base') || codeBranch(r) || 'HEAD'
     const wt = workerWorktree(repo, r.name, id)
     cwd = wt.path
     const branch = wt.branch
@@ -750,7 +760,21 @@ function cmdLead(a: Args): string {
   if (session !== currentSessionId()) emit(r.name, `You are now the lead of room ${r.name}. Load the rooms:lead skill and run rooms status ${r.name}.`)
   const out = [`${r.name}: lead ${old || '-'} -> ${session}`]
   if (old) out.push(`previous lead ${old}: ${tellSession(old, handoffNote(r, session))}`)
+  // A fresh lead starts from the record. When the old lead's transcript isn't
+  // on this host (the room moved), it can't be resumed; say so and show the head.
+  if (old && !hasTranscript(old)) out.push(`previous lead's transcript is not on this host; starting fresh from the record, not resuming it`)
+  const head = r.head.toString().trim()
+  out.push(`now-head:\n${head || '(empty)'}`)
   return out.join('\n')
+}
+
+function hasTranscript(session: string): boolean {
+  const base = join(claudeDir(), 'projects')
+  try {
+    return readdirSync(base).some(d => existsSync(join(base, d, `${session}.jsonl`)))
+  } catch {
+    return false
+  }
 }
 
 function handoffNote(r: Room, next: string): string {
@@ -770,6 +794,7 @@ function cmdChat(a: Args): string {
   const sessions = listSessions()
   const s = findSession(lead, sessions)
   const live = liveness(lead, sessions)
+  if (live !== 'alive' && !hasTranscript(lead)) fail(`lead session ${lead} has no transcript on this host, so it can't be resumed; run rooms lead ${r.name} from a fresh session to take over from the record`)
   if (live === 'unknown') fail(`lead session ${lead} liveness unknown (sandboxed?); not resuming, which could fork it`)
   const args = live === 'alive' && s ? ['attach', s.id] : ['--resume', lead]
   spawnSync(claudeBin(), args, { cwd: roomsHome(), stdio: 'inherit' })

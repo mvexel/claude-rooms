@@ -272,6 +272,41 @@ test('status: a room with ready work and nobody on it is stuck; --yield exits 1'
   assert.equal(JSON.parse(s.ok('status', 'r', '--json'))[0].status, 'idle')
 })
 
+test('status --yield: items held by an owner card or with waiting= are not ready-with-no-agent', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'R')
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  s.ok('add', 'r', 'Other', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 1)
+  s.ok('set', 'r', 'T01', 'waiting=vendor')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 1) // T02 is still free
+  assert.match(s.rooms('status', 'r', '--yield').out, /T02 ready with no agent/)
+  assert.doesNotMatch(s.rooms('status', 'r', '--yield').out, /T01 ready/)
+  s.ok('set', 'r', 'T02', 'waiting=vendor')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 0)
+  s.ok('set', 'r', 'T01', 'waiting=')
+  s.ok('set', 'r', 'T02', 'waiting=')
+  s.ok('ask', 'r', 'Ship?', '-o', 'yes', '-o', 'no', '--door', 'one', '--blocks', 'T01,T02')
+  const y = s.rooms('status', 'r', '--yield')
+  assert.equal(y.code, 0)
+  assert.doesNotMatch(y.out, /ready with no agent/)
+})
+
+test('status --yield: a held item with a dependent is not stuck', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'R')
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  s.ok('add', 'r', 'After', '--cap', '1', '--acc', 'works', '--in', 'spec', '--dep', 'T01')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 1) // nothing held: stuck
+  s.ok('ask', 'r', 'Ship?', '-o', 'yes', '-o', 'no', '--door', 'one', '--blocks', 'T01')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 0)
+  s.ok('set', 'r', 'T01', 'waiting=vendor')
+  s.ok('answer', 'r', 'D01', 'a')
+  const y = s.rooms('status', 'r', '--yield')
+  assert.equal(y.code, 0)
+  assert.equal(JSON.parse(s.ok('status', 'r', '--json'))[0].status, 'waiting_outside')
+})
+
 test('events: one delivery for many, receipts follow them', () => {
   const s = sandbox()
   s.ok('new', 'r', 'R')
@@ -360,6 +395,8 @@ test("lead without a room takes this repo's room, never another's, and the old l
   const took = lead(join(mine, 'sub'))
   assert.equal(took.code, 0, took.err)
   assert.match(took.out, /r: lead lead-session-1 -> new-lead\nprevious lead lead-session-1: told to hand off/)
+  assert.match(took.out, /transcript is not on this host; starting fresh from the record/)
+  assert.match(took.out, /now-head:\n---/)
   assert.equal(s.ok('whoami', '--session', 'new-lead'), 'lead in r')
   assert.equal(s.ok('whoami', '--session', 'other-lead'), 'lead in other')
   const old = JSON.parse(s.ok('hook', 'poll', '--session', 'lead-session-1'))
@@ -430,6 +467,22 @@ test('prune lists done items\' worktrees and removes only merged, clean ones', (
   assert.ok(existsSync(`${real}-r-t02`))
   assert.equal(git('branch', '--list', 'rooms/r/t01'), '')
   assert.notEqual(git('branch', '--list', 'rooms/r/t04'), '')
+})
+
+test('spawn with a code: line that is not "<branch> at <worktree>" fails naming that line', () => {
+  const s = sandbox()
+  const repo = join(s.home, 'proj')
+  gitRepo(s, repo)
+  s.ok('new', 'r', 'Room', '--repo', repo)
+  const brief = Record.load(join(s.home, 'r', 'BRIEF.md'))
+  brief.set('code', 'please use the integration branch')
+  brief.save()
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  const r = s.rooms('spawn', 'r', 'T01', '--repo', repo)
+  assert.notEqual(r.code, 0)
+  assert.match(r.err, /code: line in r's BRIEF\.md is "please use the integration branch"; expected "code: <branch> at <worktree>"/)
+  assert.doesNotMatch(r.err, /invalid reference/)
+  assert.equal(existsSync(`${realpathSync(repo)}-r-t01`), false)
 })
 
 test('prune removes a branch merged into the integration branch only, not the checkout HEAD', () => {
