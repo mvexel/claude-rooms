@@ -292,6 +292,21 @@ test('status --yield: items held by an owner card or with waiting= are not ready
   assert.doesNotMatch(y.out, /ready with no agent/)
 })
 
+test('status --yield: a held item with a dependent is not stuck', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'R')
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  s.ok('add', 'r', 'After', '--cap', '1', '--acc', 'works', '--in', 'spec', '--dep', 'T01')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 1) // nothing held: stuck
+  s.ok('ask', 'r', 'Ship?', '-o', 'yes', '-o', 'no', '--door', 'one', '--blocks', 'T01')
+  assert.equal(s.rooms('status', 'r', '--yield').code, 0)
+  s.ok('set', 'r', 'T01', 'waiting=vendor')
+  s.ok('answer', 'r', 'D01', 'a')
+  const y = s.rooms('status', 'r', '--yield')
+  assert.equal(y.code, 0)
+  assert.equal(JSON.parse(s.ok('status', 'r', '--json'))[0].status, 'waiting_outside')
+})
+
 test('events: one delivery for many, receipts follow them', () => {
   const s = sandbox()
   s.ok('new', 'r', 'R')

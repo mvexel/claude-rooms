@@ -27,6 +27,7 @@ export type RoomState = {
   needsYou: Record[]
   moving: string[]
   ready: string[]
+  dispatchable: string[] // ready and not held by an owner card or waiting=
   warnings: string[] // to the lead
 }
 
@@ -156,7 +157,7 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
   const dispatchable = ready.filter(id => !held.has(id))
   const waitingEvents = pending(room.name)
 
-  const base = { needsYou, moving, ready, warnings }
+  const base = { needsYou, moving, ready, dispatchable, warnings }
   const cards = needsYou.length
   const cardSentence = cards
     ? `${plural(cards, 'card')} waiting on you, oldest ${age(needsYou.map(d => d.get('opened')).sort()[0])}`
@@ -204,7 +205,7 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
     return { ...base, status: 'moving', sentence, line: `Moving: ${[...moving, ...(leadWorking ? ['lead'] : [])].join(' ')}` }
   }
   const open = items.filter(i => OPEN_ITEM.has(i.get('state')))
-  if (open.length && !open.every(i => held.has(i.get('id')))) {
+  if (open.length && !(held.size && !dispatchable.length)) {
     const why = `${plural(open.length, 'open item')}, but nothing is running or waiting on you.`
     return { ...base, status: 'stuck', sentence: why, action: 'wake', line: `STUCK: ${why}` }
   }

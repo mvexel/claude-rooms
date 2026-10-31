@@ -12,7 +12,7 @@ import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } 
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
 import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession, WORKER_DISALLOWED_TOOLS } from './sessions.ts'
-import { heldItems, isHuman, roomState } from './state.ts'
+import { isHuman, roomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
 import { repositoryIdentity, repositoryRoot, workerWorktree } from './repositories.ts'
 import { pruneCandidates, pruneRoom } from './prune.ts'
@@ -634,8 +634,7 @@ function cmdStatus(a: Args): { text: string; code: number } {
     const st = roomState(r, { sessions, yielding: has(a, 'yield') })
     if (has(a, 'yield') && st.status === 'stuck') stuck = true
     let t = statusText(r, st, has(a, 'brief'))
-    const free = st.ready.filter(id => !heldItems(r, st.ready).has(id))
-    if (has(a, 'yield') && free.length) t += `\n  ${free.join(' ')} ready with no agent: dispatch before you end your turn`
+    if (has(a, 'yield') && st.dispatchable.length) t += `\n  ${st.dispatchable.join(' ')} ready with no agent: dispatch before you end your turn`
     if (has(a, 'yield') && st.status === 'stuck') t += `\n  STUCK if you stop now: dispatch the next item, put a real question to the owner, set waiting:/resume: in now-head.md, or close the room.`
     return t
   })
