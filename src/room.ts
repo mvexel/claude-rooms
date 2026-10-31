@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { backend } from './backend.ts'
 import { roomsHome } from './config.ts'
 import { Record, hhmm, now, slug } from './record.ts'
 
@@ -28,14 +28,14 @@ export class Room {
   }
 
   static all(): Room[] {
-    if (!existsSync(roomsHome())) return []
-    return readdirSync(roomsHome(), { withFileTypes: true })
-      .filter(d => d.isDirectory() && existsSync(join(roomsHome(), d.name, 'BRIEF.md')))
+    return backend()
+      .list(roomsHome())
+      .filter(d => d.dir && backend().exists(join(roomsHome(), d.name, 'BRIEF.md')))
       .map(d => new Room(d.name))
   }
 
   exists(): boolean {
-    return existsSync(join(this.dir, 'BRIEF.md'))
+    return backend().exists(join(this.dir, 'BRIEF.md'))
   }
 
   must(): this {
@@ -49,13 +49,14 @@ export class Room {
 
   get head(): Record {
     const p = join(this.dir, 'now-head.md')
-    return existsSync(p) ? Record.load(p) : new Record(p, '---\n---\n')
+    return backend().exists(p) ? Record.load(p) : new Record(p, '---\n---\n')
   }
 
   records(sub: string): Record[] {
     const d = join(this.dir, sub)
-    if (!existsSync(d)) return []
-    return readdirSync(d)
+    return backend()
+      .list(d)
+      .map(e => e.name)
       .filter(f => /^[A-Z]+\d+.*\.md$/.test(f))
       .sort(byId)
       .map(f => Record.load(join(d, f)))
@@ -90,7 +91,6 @@ export class Room {
   }
 
   create(sub: string, id: string, title: string, fields: [string, string | string[]][], sections: [string, string][]): Record {
-    mkdirSync(join(this.dir, sub), { recursive: true })
     const r = new Record(join(this.dir, sub, `${id}-${slug(title)}.md`), '---\n---\n')
     r.set('id', id)
     r.set('title', title)
@@ -102,7 +102,7 @@ export class Room {
 
   prd(): Record | undefined {
     const p = join(this.dir, 'PRD.md')
-    return existsSync(p) ? Record.load(p) : undefined
+    return backend().exists(p) ? Record.load(p) : undefined
   }
 
   // Building is locked while a PRD exists and isn't agreed.

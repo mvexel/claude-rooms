@@ -53,6 +53,10 @@ Seven statuses, decided in one place (`src/state.ts`), each with one sentence fo
 
 One inbox across rooms, alarms for stuck rooms, a single card layout for every kind, the team's pick on each card, one tap with an undo window, delivery receipts, and three tabs. The API is in `docs/ui.md`.
 
+## Storage backend
+
+Room records and the runtime state (inbox, lease, receipts) are read and written through one interface, `Backend` in `src/backend.ts`: `read`, `write`, `append`, `exists`, `list`, `remove`, `claim`, keyed by the path the local layout would use. Files under `ROOMS_HOME` and `STATE` are the default. `CLAUDE_ROOMS_BACKEND=<module path>` loads another implementation (the module's default export is a `Backend`, or a function returning one). Locks, git, worker scratch folders, `turn.json`/`turns.log`, sessions and sandbox settings describe this machine and stay local.
+
 ## Not built yet
 
 - Push notifications (ntfy or similar) for stuck rooms and due defaults.

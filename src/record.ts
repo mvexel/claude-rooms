@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { backend } from './backend.ts'
 
 // A record is a markdown file: `---` frontmatter of `key: value` lines, then
 // `## Section` bodies. The parser keeps field order, unknown fields and
@@ -17,7 +17,9 @@ export class Record {
   }
 
   static load(path: string): Record {
-    return new Record(path, readFileSync(path, 'utf8'))
+    const text = backend().read(path)
+    if (text === undefined) throw new Error(`no record ${path}`)
+    return new Record(path, text)
   }
 
   parse(text: string): void {
@@ -82,7 +84,7 @@ export class Record {
   }
 
   save(): void {
-    writeFileSync(this.path, this.toString())
+    backend().write(this.path, this.toString())
   }
 }
 
