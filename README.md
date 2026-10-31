@@ -49,6 +49,8 @@ tailscale serve --bg --set-path /rooms http://127.0.0.1:8787
 
 Set `ROOMS_USERS` (your Tailscale login) in the unit before you expose it: only those logins can answer. The server refuses to listen beyond loopback without it. If `node` comes from a version manager, check that the unit's `PATH` reaches it (`journalctl --user -u claude-rooms` shows `node: No such file or directory` if not). After updating the plugin or the clone, `systemctl --user restart claude-rooms` loads the new code.
 
+**On Komodo (container).** `Dockerfile` and `compose.production.yml` run `rooms serve` in a minimal Debian image (git, gh, jq, curl, rsync, procps, tini). The image has no node, claude or rooms: the host home is bind-mounted at the same path, and `~/.local/node/bin` and `~/.local/bin` supply them. The container runs as `ROOMS_UID`/`ROOMS_GID` (default 1000) with `network_mode: host`, so the server stays on `127.0.0.1:8788` (`ROOMS_PORT` changes it) and `tailscale serve --bg --set-path /rooms http://127.0.0.1:8788` on the host reaches it. Set `ROOMS_USERS` (required: compose refuses to start without it) and, if it differs, `ROOMS_HOME` in the stack environment. Stop the systemd unit first: two servers on one `~/rooms` is the double-host case above. A container restart ends running workers, because lead and worker sessions are children of the container; restart it only between turns.
+
 Optional: `git -C ~/rooms remote add origin <private repo>`. Commits are then mirrored in the background. Nothing waits on a push.
 
 ## Where it runs
