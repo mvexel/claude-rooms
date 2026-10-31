@@ -175,6 +175,8 @@ export function roomDetail(room: Room, st: RoomState, sessions: Session[]) {
     phase: head.get('phase'),
     lead: {
       name: 'lead',
+      session: lead?.id ?? (room.leadSession() ? room.leadSession().slice(0, 8) : undefined),
+      session_name: lead?.name || undefined,
       state: isRunning(lead ?? room.leadSession(), sessions) ? (lead?.status === 'idle' ? 'idle' : 'working') : room.leadSession() ? (isEnded(lead ?? room.leadSession(), sessions) ? 'finished' : 'working') : 'unreachable',
       since_min: minutes(head.get('updated')) ?? 0,
     },
@@ -194,6 +196,7 @@ export function roomDetail(room: Room, st: RoomState, sessions: Session[]) {
         .map(i => {
           const session = findSession(i.get('agent'), sessions)
           return { ...item(room, i), state: i.get('state'), tier: i.get('tier') || undefined,
+            session: session?.id ?? (i.get('agent') ? i.get('agent').slice(0, 8) : undefined),
             session_state: isRunning(session ?? i.get('agent'), sessions) ? (session?.status === 'idle' ? 'idle' : session?.status === 'waiting' ? 'waiting for input' : 'working') : i.get('agent') ? (isEnded(session ?? i.get('agent'), sessions) ? 'finished' : 'working') : undefined }
         }),
     })),
