@@ -27,31 +27,43 @@ rooms init                                 # creates ~/rooms (set CLAUDE_ROOMS_H
 
 Everything rooms writes lives under `~/rooms`. Claude Code's Bash sandbox can't write there unless your settings allow it, and a plugin can't change that. So `rooms install` asks before adding `~/rooms` to `sandbox.filesystem.allowWrite` in `~/.claude/settings.json`; it keeps a `.bak`. Run it in a terminal, not from inside Claude Code; pass `--yes` to skip the question. Sessions whose sandbox can't write `~/rooms` get a note on their first prompt about rooms.
 
-Then install the plugin so every session has the skills and hooks. At a Claude Code prompt:
+Then install the plugin so every session has the skills and hooks. At a Claude Code prompt, add the marketplace from GitHub and install:
 
 ```
-/plugin marketplace add ~/dev/claude-rooms
+/plugin marketplace add mvexel/claude-rooms
 /plugin install rooms@mvexel-rooms
 ```
 
-Room role instructions are added as context when a prompt is submitted. This works
-with Claude Code's built-in `cc-plugin-sec-default` guard on managed machines and
-Team/Enterprise accounts; Rooms does not need to modify the system prompt.
+To use a local clone instead, `/plugin marketplace add ~/dev/claude-rooms`. Room role instructions are added as context when a prompt is submitted. This works with Claude Code's built-in `cc-plugin-sec-default` guard on managed machines and Team/Enterprise accounts; Rooms does not need to modify the system prompt.
 
-On a machine without the clone, add the marketplace from GitHub instead: `/plugin marketplace add mvexel/claude-rooms`. The repo is private, so that machine needs a GitHub credential that can read it (`gh auth login`, then `gh auth setup-git`).
+## The page server
 
-The page server runs as a user service (`deploy/claude-rooms.service`). To reach it from your phone over the tailnet:
+`rooms serve [--port 8787] [--host 127.0.0.1]` serves the phone page and runs the sweep (every 15 s: deliver events, apply due defaults, commit, mirror-push). It listens on loopback by default and refuses to listen on any other address unless `ROOMS_USERS` is set. Only the Tailscale logins listed in `ROOMS_USERS` (comma-separated) can answer; with it unset, a loopback server accepts every write. `ROOMS_READONLY=1` serves the page only, with no sweep and no writes.
+
+To reach it from your phone over a tailnet, keep it on loopback and let Tailscale front it:
 
 ```sh
-cp deploy/claude-rooms.service ~/.config/systemd/user/ && systemctl --user enable --now claude-rooms
+rooms serve &                      # or run it as a service, below
 tailscale serve --bg --set-path /rooms http://127.0.0.1:8787
 ```
 
-Set `ROOMS_USERS` (your Tailscale login) in the unit before you expose it: only those logins can answer. The server refuses to listen beyond loopback without it. If `node` comes from a version manager, check that the unit's `PATH` reaches it (`journalctl --user -u claude-rooms` shows `node: No such file or directory` if not). After updating the plugin or the clone, `systemctl --user restart claude-rooms` loads the new code.
+As a user service (`deploy/claude-rooms.service`):
 
-**On Komodo (container).** `Dockerfile` and `compose.production.yml` run `rooms serve` in a minimal Debian image (git, gh, jq, curl, rsync, procps, tini), built on the host at deploy (`pull_policy: build`; the image is never pushed to a registry). The image has no node, claude or rooms: the host home is bind-mounted at the same path, and `~/.local/node/bin` and `~/.local/bin` supply them. The container runs as `ROOMS_UID`/`ROOMS_GID` (default 1000) with `network_mode: host`, so the server stays on `127.0.0.1:8788` (`ROOMS_PORT` changes it) and `tailscale serve --bg --set-path /rooms http://127.0.0.1:8788` on the host reaches it. Set `ROOMS_USERS` (required: compose refuses to start without it) and, if it differs, `ROOMS_HOME` in the stack environment. The container is capped at `ROOMS_MEM_LIMIT` (default `8g`) and `ROOMS_CPUS` (default `4`), because the host's user-slice caps do not reach Docker containers; set them in the stack environment to fit the host. Stop the systemd unit first: two servers on one `~/rooms` is the double-host case above. A container restart ends running workers, because lead and worker sessions are children of the container; restart it only between turns.
+```sh
+cp deploy/claude-rooms.service ~/.config/systemd/user/ && systemctl --user enable --now claude-rooms
+```
+
+Set `ROOMS_USERS` in the unit before you expose it. If `node` comes from a version manager, check that the unit's `PATH` reaches it (`journalctl --user -u claude-rooms` shows `node: No such file or directory` if not). After updating the plugin or the clone, `systemctl --user restart claude-rooms` loads the new code.
+
+### In a container
+
+`Dockerfile` and `compose.production.yml` run `rooms serve` in a minimal Debian image (git, gh, jq, curl, rsync, procps, tini), built on the host (`pull_policy: build`; the image is never pushed to a registry). The image has no node, claude or rooms: the host home is bind-mounted at the same path, and `~/.local/node/bin` and `~/.local/bin` supply them. The container runs as `ROOMS_UID`/`ROOMS_GID` (default 1000) with `network_mode: host`, so the server stays on `127.0.0.1:8788` (`ROOMS_PORT` changes it) and `tailscale serve` on the host reaches it. Set `ROOMS_USERS` (required: compose refuses to start without it) and `ROOMS_HOME` (the host home directory the compose file mounts; the default in the file is the author's, so set it) in the environment. `ROOMS_MEM_LIMIT` (default `8g`) and `ROOMS_CPUS` (default `4`) cap the container. Don't run it alongside the systemd unit: two servers on one `~/rooms` is the double-host case below. A container restart ends running workers, because lead and worker sessions are children of the container; restart it only between turns.
 
 Optional: `git -C ~/rooms remote add origin <private repo>`. Commits are then mirrored in the background. Nothing waits on a push.
+
+## Storage
+
+Records and runtime state are plain files by default. Every read and write goes through one `Backend` interface (`src/backend.ts`); `CLAUDE_ROOMS_BACKEND=<module path>` loads another implementation, for example one that keeps records in a service. A hosted hub is such an optional backend; nothing here needs it. Locks, git, worker scratch, sessions, config and sandbox settings stay local. See [docs/design.md](docs/design.md).
 
 ## Where it runs
 
@@ -65,13 +77,13 @@ and linked worktrees count as the same repository. Closed rooms remain as histor
 - **Locally**, on your laptop. This is fine for a room you watch while you work. While the laptop sleeps, workers pause and the page can't be reached. Events wait in the inbox and are delivered on wake.
 - **On an always-on host**, like a headless box on your tailnet. Rooms keep moving while you're away.
 
-Never run the same `~/rooms` on two machines at once. Inboxes, leases and the session list are local, so two hosts would each start their own lead turns and their commits would conflict. A git remote is a mirror for backup and reading, not a sync between live hosts.
+Never run the same `~/rooms` on two machines at once (with the default file backend). Inboxes, leases and the session list are local, so two hosts would each start their own lead turns and their commits would conflict. A git remote is a mirror for backup and reading, not a sync between live hosts.
 
 From another machine:
 
 | To | Do |
 |---|---|
-| Answer cards, pause, wake a lead | Open the page over the tailnet (see Install) |
+| Answer cards, pause, wake a lead | Open the page over the tailnet (see The page server) |
 | Talk to a room's lead | `ssh <host> -t rooms chat <room>` attaches to it, or resumes it |
 | Work in the rooms with any `rooms` command | `ssh <host> -t 'cd ~/rooms && claude'` |
 | Chat with a lead from claude.ai/code or the app | Start it on the host with `cd ~/rooms && claude --remote-control lead-<room>`, then run `rooms lead <room>` inside it |
@@ -83,6 +95,8 @@ A lead or worker running on a different machine from its room isn't supported: t
 In a Claude Code session, ask for a room ("start a room for X", "form a team for Y"). The lead skill takes it from there: `rooms new`, premises, a PRD for features, the item graph, then `rooms spawn` for each ready item. You answer cards on the page, or in chat as `D05 b`. `rooms chat <room>` opens the room's lead session to talk to it. `rooms status` shows every room.
 
 Each worker gets its own worktree and branch, `<repo>-<room>-<tnn>` on `rooms/<room>/<tnn>`, named from the main checkout even when `--repo` points at a linked worktree; research items get none. Nothing removes them on its own: `rooms prune <room>` lists the worktrees and branches of done or dropped items and which can go (merged into the room's integration branch or the repo's HEAD, with a clean worktree), and `rooms prune <room> --yes` removes those. `rooms close` reminds you when some are left.
+
+`rooms pause <room>` stops new work (`rooms spawn` refuses) and `rooms resume <room>` lifts it; `rooms close <room> "reason"` ends the room. `rooms withdraw <room> <Dnn> "reason"` takes an open card off the page and keeps the reason in the record.
 
 Run `rooms status` outside Claude Code's Bash sandbox when you can: inside it the session list hides pids, so live sessions show as liveness unknown rather than as running or ended.
 
@@ -117,6 +131,27 @@ Environment variables:
 | `ROOMS_USERS` | unset | Tailscale logins allowed to answer on the page |
 | `ROOMS_HUMAN` | unset | an extra name accepted for the `human` decider, for records that name the owner |
 | `ROOMS_AS` | unset | the name your Log lines carry |
+| `ROOMS_READONLY` | unset | `1`: `rooms serve` serves the page only, no sweep, no writes |
+| `CLAUDE_ROOMS_BACKEND` | unset (local files) | path or URL of a storage backend module |
+| `CLAUDE_ROOMS_CONFIG` | `~/.config/claude-rooms/config.json` | the config file |
+| `CLAUDE_ROOMS_CLAUDE` | `claude` | the Claude Code executable used to start sessions |
+| `CLAUDE_ROOMS_CLI` | `rooms` | the `rooms` executable the plugin hooks call |
+
+## Room status in Claude Code
+
+The plugin status entry shows the current room’s moving/waiting counts, items in review, owner cards and next ready step. It refreshes with the plugin poll. For a custom Claude Code status line, use `rooms statusline`: it reads the session ID from Claude’s stdin JSON and stays blank outside a room. `rooms statusline <room>` selects one explicitly.
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "rooms statusline",
+    "refreshInterval": 5
+  }
+}
+```
+
+Merge this into Claude settings only if you want to use it as your status line; an existing status-line script can call the same command with the original stdin JSON. Waiting counts blocked items and queued items that cannot start; next is the first ready item, suppressed when paused or closed.
 
 ## Develop
 
@@ -135,19 +170,3 @@ The design, and the reasoning behind it, are in [docs/design.md](docs/design.md)
 ## License
 
 Public domain ([Unlicense](LICENSE))
-
-### Room status in Claude Code
-
-The plugin status entry shows the current room’s moving/waiting counts, items in review, owner cards and next ready step. It refreshes with the plugin poll. For a custom Claude Code status line, use `rooms statusline`: it reads the session ID from Claude’s stdin JSON and stays blank outside a room. `rooms statusline <room>` selects one explicitly.
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "rooms statusline",
-    "refreshInterval": 5
-  }
-}
-```
-
-Merge this into Claude settings only if you want to use it as your status line; an existing status-line script can call the same command with the original stdin JSON. Waiting counts blocked items and queued items that cannot start; next is the first ready item, suppressed when paused or closed.
