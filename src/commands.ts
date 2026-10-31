@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { backend, loadBackend } from './backend.ts'
 import { applyDueDefaults, recordAnswer } from './answer.ts'
-import { claudeBin, config, legacyStateDir, roomsHome, scratchDir, stateDir } from './config.ts'
+import { claudeBin, claudeDir, config, legacyStateDir, roomsHome, scratchDir, stateDir } from './config.ts'
 import { autocommit, commit, excludeLocal, git, pushInBackground, unwritable, withLock } from './git.ts'
 import { applyUserSandbox, planUserSandbox, sandboxGap } from './sandbox.ts'
 import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
@@ -760,7 +760,21 @@ function cmdLead(a: Args): string {
   if (session !== currentSessionId()) emit(r.name, `You are now the lead of room ${r.name}. Load the rooms:lead skill and run rooms status ${r.name}.`)
   const out = [`${r.name}: lead ${old || '-'} -> ${session}`]
   if (old) out.push(`previous lead ${old}: ${tellSession(old, handoffNote(r, session))}`)
+  // A fresh lead starts from the record. When the old lead's transcript isn't
+  // on this host (the room moved), it can't be resumed; say so and show the head.
+  if (old && !hasTranscript(old)) out.push(`previous lead's transcript is not on this host; starting fresh from the record, not resuming it`)
+  const head = r.head.toString().trim()
+  out.push(`now-head:\n${head || '(empty)'}`)
   return out.join('\n')
+}
+
+function hasTranscript(session: string): boolean {
+  const base = join(claudeDir(), 'projects')
+  try {
+    return readdirSync(base).some(d => existsSync(join(base, d, `${session}.jsonl`)))
+  } catch {
+    return false
+  }
 }
 
 function handoffNote(r: Room, next: string): string {
@@ -780,6 +794,7 @@ function cmdChat(a: Args): string {
   const sessions = listSessions()
   const s = findSession(lead, sessions)
   const live = liveness(lead, sessions)
+  if (live !== 'alive' && !hasTranscript(lead)) fail(`lead session ${lead} has no transcript on this host, so it can't be resumed; run rooms lead ${r.name} from a fresh session to take over from the record`)
   if (live === 'unknown') fail(`lead session ${lead} liveness unknown (sandboxed?); not resuming, which could fork it`)
   const args = live === 'alive' && s ? ['attach', s.id] : ['--resume', lead]
   spawnSync(claudeBin(), args, { cwd: roomsHome(), stdio: 'inherit' })
