@@ -69,6 +69,7 @@ test('a session the sandboxed list omits is found in the registry by id or prefi
 
 test('worker spawn args disable AskUserQuestion; lead spawn args do not', () => {
   const w = startArgs({ prompt: 'go', cwd: '.', disallowedTools: WORKER_DISALLOWED_TOOLS })
-  assert.deepEqual(w.slice(w.indexOf('--disallowedTools')), ['--disallowedTools', 'AskUserQuestion', 'go'])
+  assert.deepEqual(w.slice(w.indexOf('--disallowedTools=AskUserQuestion')), ['--disallowedTools=AskUserQuestion', 'go'])
+  assert.ok(!w.includes('--disallowedTools')) // a bare variadic flag would swallow the prompt
   assert.ok(!startArgs({ prompt: 'go', cwd: '.' }).includes('--disallowedTools'))
 })
