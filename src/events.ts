@@ -97,6 +97,17 @@ export function take(room: string): Event[] {
 
 export function render(room: string, evs: Event[]): string {
   if (!evs.length) return ''
+  // An item key (room/Tnn) is a worker's inbox: these are instructions for it,
+  // not a feed. Framed as an event list, an idle worker read them as FYI and
+  // ended its turn without acting (T33).
+  const slash = room.indexOf('/')
+  if (slash > 0 && !room.startsWith('@') && !room.startsWith('session ')) {
+    const item = room.slice(slash + 1)
+    return [
+      `[rooms] ${evs.length === 1 ? 'Message' : `${evs.length} messages`} for you on ${item} in room ${room.slice(0, slash)}. This is a request addressed to you, not background: act on it now in this turn, run \`rooms log\` with what you did or found, and only then end your turn.`,
+      ...evs.map(e => `- ${e.at.slice(11, 16)}Z ${e.text.replace(/^\[rooms\]\s*/, '')}`),
+    ].join('\n')
+  }
   const head = evs.length === 1 ? `[rooms] 1 new event in room ${room}:` : `[rooms] ${evs.length} new events in room ${room}:`
   return [head, ...evs.map(e => `- ${e.at.slice(11, 16)}Z ${e.text.replace(/^\[rooms\]\s*/, '')}`)].join('\n')
 }
