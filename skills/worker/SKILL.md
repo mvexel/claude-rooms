@@ -20,4 +20,4 @@ Your item file is your brief. It holds the Acceptance (what done means), the Inp
    Then run `rooms done <room> <Tnn>`, or `--review` if someone should check it first. That tells the lead. Stop servers and browsers you started.
 6. **Found a bug or surprise outside your item?** Log it with a command that reproduces it and say so in your Result. The lead makes it an item.
 
-Messages from the lead arrive as `[rooms]` notes (and are kept in your item's Log). If the room is paused, finish the step you're in, write your Result, and stop.
+Messages from the lead arrive as `[rooms]` notes (and are kept in your item's Log). A `[rooms]` note addressed to your item is a request: act on it in this turn, `rooms log` what you did, then end the turn. You may be running on Codex (`--backend codex`, same rules; `rooms need` to ask, Result then `rooms done`), and your commits there are unsigned by design. If the lead dispatched you as a clone ("dev 2"), the role and the rules are the same. If the room is paused, finish the step you're in, write your Result, and stop.
