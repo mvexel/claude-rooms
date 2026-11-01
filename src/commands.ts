@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { type Dirent, appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { type Dirent, appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -117,6 +117,8 @@ function cmdInit(): string {
 function moveLegacyState(): string[] {
   const from = legacyStateDir()
   if (process.env.CLAUDE_ROOMS_STATE || !existsSync(from)) return []
+  // Legacy state belongs to the default home only; a custom CLAUDE_ROOMS_HOME is a different install.
+  if (resolve(roomsHome()) !== resolve(homedir(), 'rooms')) return []
   if (existsSync(stateDir())) {
     carryLegacyInboxes(join(from, 'rooms'), join(stateDir(), 'rooms'))
     return []
@@ -124,11 +126,27 @@ function moveLegacyState(): string[] {
   try {
     mkdirSync(roomsHome(), { recursive: true })
     cpSync(from, stateDir(), { recursive: true })
+    const missing = missingFiles(from, stateDir())
+    if (missing) throw new Error(`copy incomplete (${missing} missing), original kept`)
     rmSync(from, { recursive: true, force: true })
     return [`state: moved ${from} to ${stateDir()}`]
   } catch (e) {
     return [`state: could not move ${from} to ${stateDir()}: ${(e as Error).message}`]
   }
+}
+
+// First file under `from` that has no same-size twin under `to`, or ''.
+function missingFiles(from: string, to: string): string {
+  for (const e of readdirSync(from, { withFileTypes: true })) {
+    const src = join(from, e.name)
+    const dst = join(to, e.name)
+    if (e.isDirectory()) {
+      if (!existsSync(dst)) return dst
+      const m = missingFiles(src, dst)
+      if (m) return m
+    } else if (!existsSync(dst) || statSync(dst).size !== statSync(src).size) return dst
+  }
+  return ''
 }
 
 // Rename first, so an append from the old writer lands in a new file, not a lost one.

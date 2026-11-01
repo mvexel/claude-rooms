@@ -562,3 +562,32 @@ test('a withdrawn card leaves Needs you and the page, keeps its reason, and cann
     else process.env.CLAUDE_ROOMS_HOME = previous
   }
 })
+
+test('init leaves legacy state alone unless the home is the default ~/rooms', () => {
+  const base = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'rooms-legacy-'))
+  const fakeHome = join(base, 'home')
+  const legacy = join(fakeHome, '.local', 'state', 'claude-rooms')
+  mkdirSync(join(legacy, 'rooms', 'r'), { recursive: true })
+  writeFileSync(join(legacy, 'rooms', 'r', 'inbox.jsonl'), '{"a":1}\n')
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: fakeHome,
+    CLAUDE_ROOMS_HOME: join(base, 'custom-home'),
+    CLAUDE_ROOMS_CLAUDE: '/bin/false',
+    GIT_AUTHOR_NAME: 'test',
+    GIT_AUTHOR_EMAIL: 'test@example.invalid',
+    GIT_COMMITTER_NAME: 'test',
+    GIT_COMMITTER_EMAIL: 'test@example.invalid',
+  }
+  delete env.CLAUDE_ROOMS_STATE
+  const run = (e: NodeJS.ProcessEnv) => spawnSync(process.execPath, ['--no-warnings', CLI, 'init'], { env: e, encoding: 'utf8' })
+  const r = run(env)
+  assert.equal(r.status, 0, r.stderr)
+  assert.ok(existsSync(join(legacy, 'rooms', 'r', 'inbox.jsonl')), 'legacy state must survive')
+  assert.ok(!existsSync(join(base, 'custom-home', '.state')), 'nothing copied into a custom home')
+  // default home: still migrates
+  const d = run({ ...env, CLAUDE_ROOMS_HOME: '' })
+  assert.equal(d.status, 0, d.stderr)
+  assert.ok(existsSync(join(fakeHome, 'rooms', '.state', 'rooms', 'r', 'inbox.jsonl')), 'default home migrates')
+  assert.ok(!existsSync(legacy), 'legacy removed after complete copy')
+})
