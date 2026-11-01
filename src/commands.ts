@@ -19,7 +19,7 @@ import { isHuman, roomState, tryRoomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
 import { repositoryIdentity, repositoryRoot, workerWorktree } from './repositories.ts'
 import { BACKENDS, workerOf } from './workers.ts'
-import { codexInstructions, reconcileCodex, runCodex, specFor, newRun, launchCodex } from './codex.ts'
+import { codexInstructions, codexTell, isCodex, reconcileCodex, runCodex, specFor, newRun, launchCodex } from './codex.ts'
 import { pruneCandidates, pruneRoom } from './prune.ts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -924,6 +924,7 @@ function cmdTell(a: Args): string {
     it.save()
     changed(r, `message to ${item}`)
     if (!it.get('agent')) return `${item}: logged (no worker session)`
+    if (isCodex(it)) return `${item}: ${codexTell(r.name, item, `From ${by()}: ${text}`)}`
     return `${item}: ${tellWorker(r, item, it.get('agent'), `From ${by()}: ${text}`)}`
   }
   emit(r.name, `From ${by()}: ${text}`)

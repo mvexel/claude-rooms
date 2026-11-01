@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { codexBin, config, roomsHome, stateDir } from './config.ts'
@@ -30,6 +30,8 @@ export type Run = {
   error?: string
   lastEvent?: string
   notified?: boolean
+  resume?: boolean // started by rooms tell: drain the queue into the existing thread
+  prev?: RunState // state to restore when a resume runner finds nothing queued
   spec: RunSpec
 }
 
@@ -109,6 +111,19 @@ export function codexArgs(spec: RunSpec, prompt: string): string[] {
   return args
 }
 
+// `codex exec resume` takes no -s, -C or --add-dir: the sandbox and the writable
+// roots go in as config overrides (the same roots the first run had), the
+// worktree as the process cwd. Always by thread id, never --last.
+export function resumeArgs(spec: RunSpec, threadId: string, prompt: string): string[] {
+  const args = ['exec', 'resume', '--json', '-c', `sandbox_mode=${JSON.stringify(spec.sandbox)}`, '-c', 'approval_policy="never"']
+  if (spec.model) args.push('-m', spec.model)
+  if (spec.effort) args.push('-c', `model_reasoning_effort=${JSON.stringify(spec.effort)}`)
+  if (spec.network) args.push('-c', 'sandbox_workspace_write.network_access=true')
+  args.push('-c', `sandbox_workspace_write.writable_roots=${JSON.stringify(spec.addDirs)}`)
+  args.push(threadId, '--', prompt)
+  return args
+}
+
 function gitDir(cwd: string, what: string): string | undefined {
   const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--path-format=absolute', what], { encoding: 'utf8' })
   return r.status === 0 ? r.stdout.trim() : undefined
@@ -156,39 +171,186 @@ export function launchCodex(room: string, id: string): void {
   child.unref()
 }
 
-// The runner: takes the lock, runs codex, records the outcome, tells the lead.
-export async function runCodex(room: string, id: string): Promise<void> {
-  const run = readRun(room, id)
-  if (!run) throw new Error(`no run record for ${room}/${id}`)
-  mkdirSync(dirname(lockFile(room, id)), { recursive: true })
-  try {
-    writeFileSync(lockFile(room, id), String(process.pid), { flag: 'wx' })
-  } catch {
-    const holder = lockHolder(room, id)
-    if (holder && pidLiveness(holder) !== 'dead') return // another runner owns this item
-    writeFileSync(lockFile(room, id), String(process.pid))
+// ---- queued follow-ups ------------------------------------------------------
+// rooms tell --item spools to STATE/runs/<room>/<Tnn>.q/ (one file per message, tmp+rename).
+// The runner claims each message by rename; the lock keeps one run per item and a message is delivered by exactly one turn.
+
+// The queue is a spool directory, one file per message. A tell writes a dotfile
+// and renames it into place, so a message is either wholly there or not at all;
+// the runner claims each message by renaming it into its own taking dir, so a
+// write can never land in a file that was already taken.
+const spoolDir = (room: string, id: string) => `${runBase(room, id)}.q`
+const msgFiles = (dir: string): string[] => { try { return readdirSync(dir).filter(f => f.endsWith('.json')).sort() } catch { return [] } }
+
+type Taken = { name: string; text: string }
+
+function enqueue(room: string, id: string, text: string): void {
+  const dir = spoolDir(room, id)
+  mkdirSync(dir, { recursive: true })
+  const name = `${Date.now().toString().padStart(14, '0')}-${process.pid}-${Math.random().toString(36).slice(2, 8)}.json`
+  writeFileSync(join(dir, `.${name}.tmp`), JSON.stringify({ at: new Date().toISOString(), text }))
+  renameSync(join(dir, `.${name}.tmp`), join(dir, name))
+}
+
+function takeDir(room: string, id: string): string { return `${spoolDir(room, id)}.taking.${process.pid}` }
+
+function takeQueue(room: string, id: string): Taken[] {
+  const dir = spoolDir(room, id)
+  const mine = takeDir(room, id)
+  const out: Taken[] = []
+  for (const name of msgFiles(dir)) {
+    mkdirSync(mine, { recursive: true })
+    try { renameSync(join(dir, name), join(mine, name)) } catch { continue } // another runner claimed it
+    try { out.push({ name, text: JSON.parse(readFileSync(join(mine, name), 'utf8')).text }) } catch {}
   }
-  const prompt = readFileSync(`${runBase(room, id)}.prompt`, 'utf8')
-  const spec = run.spec
-  run.state = 'running'
-  run.pid = process.pid
+  return out
+}
+
+// Delivered: forget the claimed messages.
+function settle(room: string, id: string): void { try { rmSync(takeDir(room, id), { recursive: true, force: true }) } catch {} }
+
+// A resume that failed before its turn started delivered nothing: the messages
+// go back under their old names, so they stay ahead of anything newer.
+function requeueHead(room: string, id: string, taken: Taken[]): void {
+  for (const t of taken) try { renameSync(join(takeDir(room, id), t.name), join(spoolDir(room, id), t.name)) } catch {}
+  settle(room, id)
+}
+
+function queued(room: string, id: string): boolean { return msgFiles(spoolDir(room, id)).length > 0 }
+
+export function followUpPrompt(msgs: string[]): string {
+  return msgs.length === 1 ? msgs[0] : msgs.map((m, i) => `Message ${i + 1}:\n${m}`).join('\n\n')
+}
+
+// Deliver a message to a Codex worker: persist it, and if no run is going,
+// resume the same thread by id to take it. Returns the line for the caller.
+export function codexTell(room: string, id: string, text: string): string {
+  const first = codexLiveness(room, id)
+  if (first.live === 'unknown') return 'held: no run record on this host (liveness unknown); not starting a run'
+  if (first.live === 'dead' && !first.run?.threadId) return 'held: the Codex run has no session to resume (it never started a thread); respawn with --backend codex'
+  // Append FIRST, then look: a runner re-checks the queue after it unlocks, so either it sees
+  // this message or we see no lock holder and start one. Looking first could strand it.
+  enqueue(room, id, text)
+  const holder = lockHolder(room, id)
+  const lv = codexLiveness(room, id)
+  const { state, run } = lv
+  if ((holder && pidLiveness(holder) !== 'dead') || lv.live !== 'dead' || !run) return 'queued: the running Codex worker gets it in its next turn'
+  if (!run.threadId) return 'held: the Codex run has no session to resume (it never started a thread); respawn with --backend codex'
+  // Not running: mark the run as starting so liveness and status see it, then launch a runner.
+  // Two tells at once both launch; the lock lets one runner drain both messages.
+  run.prev = state === 'idle' ? 'idle' : 'failed'
+  run.state = 'starting'
+  run.resume = true
+  run.startedAt = new Date().toISOString()
+  run.pid = undefined
+  run.codexPid = undefined
+  run.notified = false
+  run.error = undefined
   writeRun(room, id, run)
+  launchCodex(room, id)
+  return 'the Codex worker is resumed with it (same session)'
+}
+
+// The runner: takes the lock, runs codex turns (the first prompt, then queued
+// follow-ups resumed by thread id), records each outcome, tells the lead.
+export async function runCodex(room: string, id: string): Promise<void> {
+  if (!readRun(room, id)) throw new Error(`no run record for ${room}/${id}`)
+  mkdirSync(dirname(lockFile(room, id)), { recursive: true })
+  let current: number | undefined
+  let terminated = false
+  process.on('SIGTERM', () => { terminated = true; if (current) try { process.kill(-current, 'SIGTERM') } catch {} })
+  for (;;) {
+    if (!acquireLock(room, id)) { return } // another runner owns this item
+    let again = false
+    try {
+      again = await drain(room, id, pid => { current = pid }, () => terminated)
+    } finally {
+      try { unlinkSync(lockFile(room, id)) } catch {}
+    }
+    // A message that arrived after the last queue check but before the unlock: take it now.
+    const run = readRun(room, id)
+    if (terminated || !(again || queued(room, id)) || !run?.threadId || run.state !== 'idle') {
+      // The item is done and nothing is waiting: only now does its scratch folder go (a resumed turn needs it).
+      // rooms done could not remove it from inside the sandbox.
+      if (run && !queued(room, id)) try { if (new Room(room).find(id).get('state') === 'done') rmSync(run.spec.scratch, { recursive: true, force: true }) } catch {}
+      return
+    }
+  }
+}
+
+// O_EXCL, also for taking over a dead holder's lock: of two runners finding a stale lock, one wins.
+function acquireLock(room: string, id: string): boolean {
+  for (let i = 0; i < 5; i++) {
+    try {
+      writeFileSync(lockFile(room, id), String(process.pid), { flag: 'wx' })
+      return true
+    } catch {
+      const holder = lockHolder(room, id)
+      if (holder === undefined) continue // vanished or being written: just retry the exclusive create
+      if (pidLiveness(holder) !== 'dead') return false
+      try { unlinkSync(lockFile(room, id)) } catch {}
+    }
+  }
+  return false
+}
+
+// Runs turns until the queue is empty. Returns true if it stopped for a reason a queued message could still use.
+async function drain(room: string, id: string, setPid: (p?: number) => void, isTerminated: () => boolean): Promise<boolean> {
+  let first = true
+  for (;;) {
+    const run = readRun(room, id)!
+    const spec = run.spec
+    let args: string[]
+    let taken: Taken[] = []
+    if (first && run.state === 'starting' && !run.resume) {
+      args = codexArgs(spec, readFileSync(`${runBase(room, id)}.prompt`, 'utf8'))
+    } else {
+      if (!run.threadId) return false
+      if (run.state === 'failed') return false
+      taken = takeQueue(room, id)
+      const msgs = taken.map(t => t.text)
+      if (!msgs.length) {
+        if (run.state === 'starting') { run.state = run.prev ?? 'idle'; run.resume = false; writeRun(room, id, run) } // another runner took it
+        return false
+      }
+      args = resumeArgs(spec, run.threadId, followUpPrompt(msgs))
+    }
+    first = false
+    run.state = 'running'
+    run.pid = process.pid
+    run.codexPid = undefined
+    run.resume = false
+    run.error = undefined
+    run.notified = false
+    writeRun(room, id, run)
+    const { ok, started } = await turn(room, id, run, args, setPid, isTerminated)
+    // A resume that never started its turn delivered nothing: the messages go back, first in line.
+    if (!ok && !started && taken.length) requeueHead(room, id, taken)
+    else settle(room, id)
+    if (!ok || isTerminated()) return false
+    if (!queued(room, id)) return false
+  }
+}
+
+async function turn(room: string, id: string, run: Run, args: string[], setPid: (p?: number) => void, isTerminated: () => boolean): Promise<{ ok: boolean; started: boolean }> {
+  const spec = run.spec
+  mkdirSync(spec.scratch, { recursive: true }) // codex refuses every command when $TMPDIR is gone
   const env: NodeJS.ProcessEnv = { ...process.env, ROOMS_AS: spec.who, TMPDIR: spec.scratch }
   // Codex is not the lead and not a Claude session: nothing may make it look like one.
   for (const k of ['CLAUDE_ROOMS_SESSION', 'CLAUDE_CODE_SESSION_ID', 'ROOMS_TURN']) delete env[k]
   let sawCompleted = false
+  let started = false
   let failure = ''
   let lastError = '' // a top-level error alone is not a failure: codex may report non-fatal ones
   let stderr = ''
   let exit: number | null = null
   // Its own process group, so a killed runner leaves a worker that liveness still sees.
-  const child = spawn(codexBin(), codexArgs(spec, prompt), { cwd: spec.cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+  const child = spawn(codexBin(), args, { cwd: spec.cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+  setPid(child.pid)
   if (child.pid) {
     run.codexPid = child.pid
     writeRun(room, id, run)
   }
-  const stop = () => { try { process.kill(-child.pid!, 'SIGTERM') } catch {} }
-  process.on('SIGTERM', () => { failure ||= 'runner terminated'; stop() })
   let buf = ''
   const eventLog = `${runBase(room, id)}.jsonl`
   const onLine = (l: string) => {
@@ -196,9 +358,12 @@ export async function runCodex(room: string, id: string): Promise<void> {
     try { e = JSON.parse(l) } catch { return }
     run.lastEvent = e.type
     if (e.type === 'thread.started' && e.thread_id) {
-      run.threadId = e.thread_id
-      recordSession(room, id, e.thread_id)
-    } else if (e.type === 'turn.completed') sawCompleted = true
+      if (!run.threadId) {
+        run.threadId = e.thread_id
+        recordSession(room, id, e.thread_id)
+      }
+    } else if (e.type === 'turn.started') started = true
+    else if (e.type === 'turn.completed') sawCompleted = true
     else if (e.type === 'turn.failed') failure = e.error?.message || 'turn failed'
     else if (e.type === 'error') lastError = e.message || ''
     writeRun(room, id, run)
@@ -215,23 +380,23 @@ export async function runCodex(room: string, id: string): Promise<void> {
     child.on('error', e => { failure ||= `could not start codex: ${e.message}`; res() })
     child.on('close', code => { exit = code; res() })
   })
+  setPid(undefined)
+  if (isTerminated()) failure ||= 'runner terminated'
   if (buf.trim()) onLine(buf)
   run.exitCode = exit
   const it = new Room(room).find(id)
   const ok = sawCompleted && exit === 0 && !failure
   if (ok) {
     run.state = 'idle'
-    if (it.get('state') === 'doing') emit(room, `${id}'s Codex turn ended but the item is still doing and no rooms done or rooms need came from it. Read its Log and Result; rooms tell ${room} --item ${id} "<what is missing>" or re-plan.`)
+    if (it.get('state') === 'doing' && !queued(room, id)) emit(room, `${id}'s Codex turn ended but the item is still doing and no rooms done or rooms need came from it. Read its Log and Result; rooms tell ${room} --item ${id} "<what is missing>" or re-plan.`)
   } else {
     run.state = 'failed'
     run.error = failure || lastError || stderr.trim().split('\n').pop() || `codex exited with ${exit}`
-    emit(room, `${id}'s Codex run failed (${run.error}). The item is still ${it.get('state')}, nothing was marked done. Check ${runBase(room, id)}.jsonl, then rooms spawn ${room} ${id} --backend codex to start again, or reassign it.`)
+    emit(room, `${id}'s Codex run failed (${run.error}). The item is still ${it.get('state')}, nothing was marked done. Check ${runBase(room, id)}.jsonl, then rooms tell ${room} --item ${id} to resume the session with a message, or rooms spawn ${room} ${id} --backend codex to start again, or reassign it.`)
   }
   run.notified = true
   writeRun(room, id, run)
-  try { unlinkSync(lockFile(room, id)) } catch {}
-  // rooms done could not remove the scratch folder from inside the sandbox; the item is done, so do it here.
-  if (it.get('state') === 'done') try { rmSync(spec.scratch, { recursive: true, force: true }) } catch {}
+  return { ok, started }
 }
 
 // Write the Codex thread id onto the item (a small load-modify-save).

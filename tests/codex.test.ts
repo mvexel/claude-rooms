@@ -209,3 +209,129 @@ test('rooms done still tells the lead when scratch removal fails; the runner rem
   s.ok('spawn', 'r', 'T01', '--backend', 'codex', '--force')
   await s.wait(() => s.run().state === 'idle' && !existsSync(scratch))
 })
+
+const argsLines = (s: ReturnType<typeof sandbox>) => readFileSync(s.env.FAKE_CODEX_LOG!, 'utf8').split('\n').filter(l => l.startsWith('ARGS:'))
+const promptLines = (s: ReturnType<typeof sandbox>) => readFileSync(s.env.FAKE_CODEX_LOG!, 'utf8').split('\n').filter(l => l.startsWith('PROMPT:'))
+
+test('tell resumes the same thread by id with the first run sandbox and roots; never --last', async () => {
+  const s = sandbox({ codex: { model: 'gpt-x', network: true } })
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'idle')
+  const out = s.ok('tell', 'r', 'fix the thing', '--item', 'T01')
+  assert.match(out, /resumed/)
+  await s.wait(() => promptLines(s).length === 1 && s.run().state === 'idle')
+  const [first, resumed] = argsLines(s)
+  assert.match(resumed, /^ARGS:exec resume --json -c sandbox_mode="workspace-write" -c approval_policy="never" -m gpt-x /)
+  assert.match(resumed, / thread-abc -- /)
+  assert.doesNotMatch(resumed, /--last| -s | -C | --add-dir/)
+  assert.match(resumed, /sandbox_workspace_write\.network_access=true/)
+  // same writable roots as the first run's --add-dir list
+  const roots = JSON.parse(resumed.match(/writable_roots=(\[.*?\]) thread/)![1])
+  const added = [...first.matchAll(/--add-dir (\S+)/g)].map(m => m[1])
+  assert.deepEqual(roots, added)
+  assert.ok(roots.some((d: string) => /\.git\/worktrees\//.test(d)) && roots.some((d: string) => /rooms\/\.git$/.test(d)))
+  assert.match(promptLines(s)[0], /fix the thing/)
+  assert.equal(s.item().get('codex_session'), 'thread-abc')
+  assert.equal(s.item().get('state'), 'doing')
+  assert.match(s.item().toString(), /message: fix the thing/)
+})
+
+test('tell during a run is queued once and delivered after the turn: no overlap, no duplicate', async () => {
+  const s = sandbox()
+  s.env.FAKE_CODEX_MODE = 'slow'
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'running' && s.run().threadId)
+  const out = s.ok('tell', 'r', 'one', '--item', 'T01')
+  assert.match(out, /queued/)
+  s.ok('tell', 'r', 'two', '--item', 'T01')
+  assert.equal(argsLines(s).length, 1) // no second codex while the first runs
+  await s.wait(() => promptLines(s).length >= 1 && s.run().state === 'idle', 20000)
+  await new Promise(r => setTimeout(r, 500))
+  const prompts = promptLines(s)
+  assert.equal(prompts.length, 1) // both messages in one resumed turn, delivered once
+  assert.match(prompts[0], /one/)
+  assert.equal(readFileSync(s.env.FAKE_CODEX_LOG!, 'utf8').split('\n').filter(l => l.startsWith('PROMPT:')).join('\n').split('two').length - 1, 1)
+})
+
+test('concurrent tells to an idle worker start one run and deliver each message once', async () => {
+  const s = sandbox()
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'idle')
+  s.env.FAKE_CODEX_SLEEP = '1'
+  const { spawn } = await import('node:child_process')
+  const tells = ['m1', 'm2', 'm3'].map(m => new Promise<void>(res => spawn(process.execPath, ['--no-warnings', CLI, 'tell', 'r', m, '--item', 'T01'], { env: s.env }).on('close', () => res())))
+  await Promise.all(tells)
+  await s.wait(() => promptLines(s).length >= 1 && s.run().state === 'idle', 15000)
+  await new Promise(r => setTimeout(r, 1500))
+  await s.wait(() => s.run().state === 'idle')
+  const all = promptLines(s).join('\n')
+  for (const m of ['m1', 'm2', 'm3']) assert.equal(all.split(m).length - 1, 1, `${m} delivered once`)
+  assert.ok(promptLines(s).length <= 3)
+})
+
+test('tell to a failed run resumes it; no thread means held; unknown run record never spawns', async () => {
+  const s = sandbox()
+  s.env.FAKE_CODEX_MODE = 'crash'
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'failed')
+  s.env.FAKE_CODEX_MODE = 'ok'
+  s.ok('tell', 'r', 'retry', '--item', 'T01')
+  await s.wait(() => promptLines(s).length === 1 && s.run().state === 'idle')
+  assert.equal(s.item().get('state'), 'doing')
+  const { rmSync } = await import('node:fs')
+  rmSync(s.runFile)
+  assert.match(s.ok('tell', 'r', 'x', '--item', 'T01'), /held: no run record/)
+  assert.equal(promptLines(s).length, 1)
+})
+
+test('a resume that fails before its turn starts puts the messages back, first in line', async () => {
+  const s = sandbox()
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'idle')
+  s.env.FAKE_CODEX_RESUME = 'norollout'
+  s.ok('tell', 'r', 'first', '--item', 'T01')
+  await s.wait(() => s.run().state === 'failed')
+  assert.match(s.run().error, /no rollout found/)
+  delete s.env.FAKE_CODEX_RESUME
+  s.ok('tell', 'r', 'second', '--item', 'T01')
+  await s.wait(() => promptLines(s).length === 1 && s.run().state === 'idle')
+  const p = promptLines(s)[0]
+  assert.ok(p.indexOf('first') >= 0 && p.indexOf('first') < p.indexOf('second'), p)
+})
+
+test('a resumed turn on a done item still has its scratch folder; it goes after the final drain', async () => {
+  const s = sandbox()
+  s.env.FAKE_CODEX_MODE = 'done'
+  s.env.FAKE_CODEX_DONE = `${process.execPath} --no-warnings ${CLI} set r T01 state=done`
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  const scratch = join(s.env.CLAUDE_ROOMS_STATE!, 'scratch', 'r', 'T01')
+  await s.wait(() => s.run().state === 'idle' && !existsSync(scratch))
+  s.env.FAKE_CODEX_MODE = 'ok'
+  s.env.FAKE_CODEX_SLEEP = '1'
+  s.ok('tell', 'r', 'one more thing', '--item', 'T01')
+  await s.wait(() => promptLines(s).length === 1)
+  assert.ok(existsSync(scratch), 'scratch recreated for the resumed turn')
+  await s.wait(() => s.run().state === 'idle' && !existsSync(scratch))
+})
+
+test('a tell that sees a live lock holder is spooled first, so the exiting runner or the next tell still delivers it', async () => {
+  const s = sandbox()
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'idle')
+  const { spawn } = await import('node:child_process')
+  const holder = spawn('sleep', ['30'])
+  const lock = join(s.env.CLAUDE_ROOMS_STATE!, 'runs', 'r', 'T01.lock')
+  writeFileSync(lock, String(holder.pid))
+  assert.match(s.ok('tell', 'r', 'while locked', '--item', 'T01'), /queued/)
+  const spool = join(s.env.CLAUDE_ROOMS_STATE!, 'runs', 'r', 'T01.q')
+  assert.equal(readdirSync(spool).filter(f => f.endsWith('.json')).length, 1) // on disk before the holder looks
+  assert.equal(promptLines(s).length, 0)
+  // the holder (a runner) goes away without having seen it: the next tell must deliver both, in order
+  holder.kill('SIGKILL')
+  await new Promise(r => holder.on('close', r))
+  s.ok('tell', 'r', 'after', '--item', 'T01')
+  await s.wait(() => promptLines(s).length === 1 && s.run().state === 'idle')
+  const p = promptLines(s)[0]
+  assert.ok(p.indexOf('while locked') >= 0 && p.indexOf('while locked') < p.indexOf('after'), p)
+  assert.equal(readdirSync(spool).length, 0)
+})
