@@ -24,12 +24,12 @@
   --bg:#111110; --surface:#1b1b1a; --sunk:#232321; --ink:#f2f1ec; --ink-2:#b9b7ae; --line:#2e2d2a;
   --accent:#7fb2f5; --accent-ink:#111110; --accent-soft:#1c2a3d;
   --signal:#ff9b7e; --signal-soft:#3a1f17; --critical:#ff8a80; --critical-soft:#3b1d1b;
-  --ok:#6fcf8b; --ok-soft:#173222; --shadow:none; }
+  --ok:#6fcf8b; --ok-soft:#173222; --shadow:none; --av-l:62%; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme:dark;
   --bg:#111110; --surface:#1b1b1a; --sunk:#232321; --ink:#f2f1ec; --ink-2:#b9b7ae; --line:#2e2d2a;
   --accent:#7fb2f5; --accent-ink:#111110; --accent-soft:#1c2a3d;
   --signal:#ff9b7e; --signal-soft:#3a1f17; --critical:#ff8a80; --critical-soft:#3b1d1b;
-  --ok:#6fcf8b; --ok-soft:#173222; --shadow:none; } }
+  --ok:#6fcf8b; --ok-soft:#173222; --shadow:none; --av-l:62%; } }
 * { box-sizing:border-box; }
 html,body { margin:0; background:var(--bg); color:var(--ink); }
 body { padding-bottom:calc(var(--tab-h) + env(safe-area-inset-bottom) + 16px); -webkit-tap-highlight-color:transparent; }
@@ -381,8 +381,9 @@ async function refresh() {
     S.inbox = inbox;
     S.rooms = Array.isArray(rooms) ? rooms : rooms.rooms || [];
     S.roomsHome = Array.isArray(rooms) ? "" : rooms.rooms_home || "";
-    const [a, b] = routes();
+    const [a, b, c] = routes();
     if (a === "room" && b) S.detail[b] = await getJSON("rooms/" + encodeURIComponent(b));
+    if (a === "agent" && b && c) S.agent = await getJSON(`rooms/${encodeURIComponent(b)}/agents/${encodeURIComponent(c)}`);
     // returned waiting-on-team cards come back when the server lists them again with a reply
     ui.waiting = ui.waiting.filter(w => !(S.inbox.cards || []).some(c => key(c) === key(w) && c.reply_unread));
     S.loadedAt = new Date(); S.offline = false; S.error = "";

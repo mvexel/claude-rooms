@@ -21,9 +21,9 @@ export function identity(session: string): Identity {
       if (b[4 + y * 3 + x] & 1) {
         for (const cx of x === 2 ? [2] : [x, 4 - x]) cells.push(`<rect x="${cx}" y="${y}" width="1" height="1"/>`)
       }
-  // Mid lightness and a tinted backdrop keep it readable on light and dark pages.
+  // Lightness comes from --av-l (30% light theme default, 62% in the dark theme) so every hue clears 3:1.
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1 -1 7 7" role="img" aria-label="Avatar of ${name}" width="32" height="32">` +
     `<rect x="-1" y="-1" width="7" height="7" rx="1.5" fill="hsl(${hue} 55% 50% / 0.22)"/>` +
-    `<g fill="hsl(${hue} 65% 46%)" stroke="hsl(${hue} 65% 46%)" stroke-width="0.02">${cells.join('')}</g></svg>`
+    `<g style="fill:hsl(${hue} 65% var(--av-l,30%));stroke:hsl(${hue} 65% var(--av-l,30%))" stroke-width="0.02">${cells.join('')}</g></svg>`
   return { name, hue, svg }
 }

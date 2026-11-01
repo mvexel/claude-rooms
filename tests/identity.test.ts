@@ -1,5 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { Room } from '../src/room.ts'
+const CLI = resolve(import.meta.dirname, '..', 'cli', 'rooms.ts')
 import { identity } from '../src/identity.ts'
 import { agentDetail } from '../src/server.ts'
 
@@ -26,3 +32,38 @@ test('avatar is inline svg, mirrored, with no external references or script', ()
 })
 
 test('agentDetail is exported', () => assert.equal(typeof agentDetail, 'function'))
+
+test('avatar fill takes its lightness from --av-l, with a light-theme default', () => {
+  const { svg } = identity(sid(3))
+  assert.match(svg, /fill:hsl\(\d+ 65% var\(--av-l,30%\)\)/)
+  assert.doesNotMatch(svg, /<g fill=/)
+})
+
+test('agentDetail on a fixture room: lead, worker with two items, charter', () => {
+  const base = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'identity-test-'))
+  const env = { ...process.env, CLAUDE_ROOMS_HOME: join(base, 'rooms'), CLAUDE_ROOMS_STATE: join(base, 'state'), CLAUDE_ROOMS_CONFIG: join(base, 'none.json'), CLAUDE_ROOMS_SESSION: 'lead-session-1', CLAUDE_ROOMS_CLAUDE: '/bin/false' }
+  const cli = (...a: string[]) => { const r = spawnSync(process.execPath, ['--no-warnings', CLI, ...a], { env, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout }
+  cli('init'); cli('new', 'r', 'R')
+  cli('add', 'r', 'One', '--owner', 'builder', '--acc', 'a', '--in', 'brief')
+  cli('add', 'r', 'Two', '--owner', 'builder', '--acc', 'a', '--in', 'brief')
+  const worker = 'abcd1234-0000-4000-8000-000000000001'
+  cli('set', 'r', 'T01', `agent=${worker}`, 'state=done'); cli('set', 'r', 'T02', `agent=${worker}`, 'state=doing')
+  const previous = process.env.CLAUDE_ROOMS_HOME
+  process.env.CLAUDE_ROOMS_HOME = env.CLAUDE_ROOMS_HOME
+  try {
+    const room = new Room('r')
+    const brief = room.brief
+    brief.setSection('Team', '- builder: standard tier. Builds one item at a time;\n  never merges.\n- reviewer: review tier.')
+    brief.save()
+    const a = agentDetail(new Room('r'), 'abcd1234', [])!
+    assert.equal(a.role, 'builder')
+    assert.equal(a.received, 2)
+    assert.equal(a.completed, 1)
+    assert.equal(a.name, identity(worker).name)
+    assert.equal(a.charter, 'standard tier. Builds one item at a time; never merges.')
+    assert.equal(agentDetail(new Room('r'), 'nope', []), undefined)
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_ROOMS_HOME
+    else process.env.CLAUDE_ROOMS_HOME = previous
+  }
+})
