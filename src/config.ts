@@ -33,6 +33,10 @@ export function claudeBin(): string {
   return process.env.CLAUDE_ROOMS_CLAUDE || 'claude'
 }
 
+export function codexBin(): string {
+  return process.env.CLAUDE_ROOMS_CODEX || 'codex'
+}
+
 // A lease younger than this means the lead session's plugin drains the inbox.
 export const LEASE_FRESH_MS = 45_000
 
@@ -41,6 +45,10 @@ export type Config = {
   tiers: { [name: string]: Tier }
   worker: { permissionMode: string; tier: string }
   lead: { permissionMode: string; model?: string; allowedTools: string[] }
+  // Codex workers: their own model and effort (Codex ids, never Claude tiers)
+  // and sandbox. Unset model/effort mean Codex's own configured default.
+  // File-only: the sandbox is a privilege, so the page cannot change it.
+  codex: { model?: string; effort?: string; sandbox: string; addDirs: string[]; network?: boolean }
   provisionalMinutes: number // a two-way default applies this long after it is set, at least 30
   commitDebounceMs: number
   hallMonitor: { maxThreads: number; queueLimit: number } // parallel workers per room; items that may wait on one role before it is cloned
@@ -56,6 +64,7 @@ const DEFAULTS: Config = {
   },
   worker: { permissionMode: 'auto', tier: 'standard' },
   lead: { permissionMode: 'auto', allowedTools: ['Bash(rooms *)', 'Read', 'Edit', 'Write'] },
+  codex: { sandbox: 'workspace-write', addDirs: [] },
   provisionalMinutes: 60,
   commitDebounceMs: 60_000,
   hallMonitor: { maxThreads: 4, queueLimit: 1 },
@@ -223,6 +232,7 @@ function merge(user: Partial<Config>, over: Overrides): Config {
     hallMonitor: { ...DEFAULTS.hallMonitor, ...user.hallMonitor, ...over.hallMonitor },
     worker: { ...DEFAULTS.worker, ...user.worker, ...over.worker },
     lead: { ...DEFAULTS.lead, ...user.lead, ...over.lead },
+    codex: { ...DEFAULTS.codex, ...user.codex },
   }
 }
 

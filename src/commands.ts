@@ -18,6 +18,8 @@ import { currentSessionId, findSession, isEnded, isRunning, listSessions, livene
 import { isHuman, roomState, tryRoomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
 import { repositoryIdentity, repositoryRoot, workerWorktree } from './repositories.ts'
+import { BACKENDS, workerOf } from './workers.ts'
+import { codexInstructions, reconcileCodex, runCodex, specFor, newRun, launchCodex } from './codex.ts'
 import { pruneCandidates, pruneRoom } from './prune.ts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -487,7 +489,12 @@ function cmdDone(a: Args): string {
   // Scratch is kept for review (--review); only a finished item sheds it.
   if (state === 'done') {
     const scratch = scratchDir(r.name, id)
-    if (existsSync(scratch)) rmSync(scratch, { recursive: true, force: true })
+    // Best effort: inside a Codex sandbox the removal can fail (EBUSY), and the lead must still hear.
+    try {
+      if (existsSync(scratch)) rmSync(scratch, { recursive: true, force: true })
+    } catch {
+      // the Codex runner (or prune) removes it later
+    }
   }
   changed(r, `${id} ${state}`)
   const told = tellLead(r, `${id} (${it.get('title')}) is ${state}, by ${by()}. Next: ${next}. Read its Result and take the next step.`)
@@ -755,21 +762,27 @@ function cmdSpawn(a: Args): string {
     return `${r.name}: lead session ${s.id} started`
   }
   const it = findWorkItem(r, id ?? fail('usage: rooms spawn <room> <Tnn> [--tier light|standard|review] [--repo <path> [--base <branch>]] | --lead'))
+  const wanted = flag(a, 'backend') || it.get('backend') || 'claude'
+  if (!(BACKENDS as string[]).includes(wanted)) fail(`unknown backend ${wanted} (${BACKENDS.join(', ')})`)
   if (it.get('agent')) {
     const sessions = listSessions()
-    const s = findSession(it.get('agent'), sessions)
-    if (isRunning(s ?? it.get('agent'), sessions)) fail(`${id} already has a live worker (${s?.id ?? it.get('agent')}); send it a message with rooms tell instead`)
-    if (!isEnded(s ?? it.get('agent'), sessions) && !has(a, 'force')) fail(`${id}'s worker session ${it.get('agent')} may be alive (liveness unknown: sandboxed or session list unavailable); run from outside the sandbox, or --force once you know it ended`)
+    const w = workerOf(r.name, it, sessions)
+    const who = w.session?.id ?? it.get('agent')
+    if (w.live === 'alive') fail(`${id} already has a live worker (${who}); send it a message with rooms tell instead`)
+    if (w.live !== 'dead' && !has(a, 'force')) fail(`${id}'s worker ${it.get('agent')} may be alive (liveness unknown: ${w.backend === 'codex' ? 'no run record on this host' : 'sandboxed or session list unavailable'}); run from outside the sandbox, or --force once you know it ended`)
   }
   const warns = guardStart(r, it, has(a, 'force'))
   // The thread cap is checked before anything is created.
   const plan = hallMonitor(r)
   if (plan.running >= plan.max && !has(a, 'over-cap')) fail(`${r.name} already runs ${plan.running} workers (hallMonitor.maxThreads ${plan.max}); wait for one to finish, raise maxThreads in the config, or --over-cap`)
   const clone = plan.clones.find(c => c.item === it.get('id'))?.name
+  const codex = wanted === 'codex'
   const tierName = flag(a, 'tier') || it.get('tier') || c.worker.tier
-  const tier = c.tiers[tierName] ?? fail(`unknown tier ${tierName} (config tiers: ${Object.keys(c.tiers).join(', ')})`)
-  const model = flag(a, 'model') || tier.model
-  const effort = flag(a, 'effort') || tier.effort
+  // Codex has its own model and effort (config.codex); Claude tiers and ids never reach it.
+  const tier = codex ? {} : c.tiers[tierName] ?? fail(`unknown tier ${tierName} (config tiers: ${Object.keys(c.tiers).join(', ')})`)
+  const model = flag(a, 'model') || (codex ? c.codex.model : (tier as { model?: string }).model)
+  const effort = flag(a, 'effort') || (codex ? c.codex.effort : (tier as { effort?: string }).effort)
+  if (codex && flag(a, 'permission-mode')) fail('--permission-mode is a Claude flag; Codex runs under config.codex.sandbox')
   // The repo is --repo, else the room's first repo from BRIEF.md; never the lead's cwd.
   const repo = flag(a, 'repo') || r.brief.list('repos')[0]
   let cwd = repo ?? process.cwd()
@@ -785,7 +798,8 @@ function cmdSpawn(a: Args): string {
       const w = spawnSync('git', ['-C', repo, 'worktree', 'add', cwd, '-b', branch, base], { encoding: 'utf8' })
       if (w.status !== 0) fail(`git worktree add failed: ${w.stderr.trim()}`)
     }
-    it.appendTo('Inputs', `- Worktree: ${cwd} (branch ${branch} from ${base})`)
+    const line = `- Worktree: ${cwd} (branch ${branch} from ${base})`
+    if (!it.section('Inputs').includes(line)) it.appendTo('Inputs', line)
   }
   const scratch = scratchDir(r.name, id)
   try {
@@ -797,18 +811,35 @@ function cmdSpawn(a: Args): string {
   // A routed room's item is on the hub; the worker edits a working copy that the commands sync.
   const itemFile = publishWorking(r, it)
   const prompt = [
-    `You are ${who} on item ${id} (${it.get('title')}) in room ${r.name}. Load the rooms:worker skill first.`,
+    `You are ${who} on item ${id} (${it.get('title')}) in room ${r.name}.${codex ? '' : ' Load the rooms:worker skill first.'}`,
     `Your item: ${itemFile}`,
     itemFile === it.path ? '' : `(${r.name} is on the hub: this is a working copy. Edit it freely; rooms log, set, need and done take your edits to the hub.)`,
-    r.prd() ? `Binding set: rooms brief ${r.name}` : '',
+    codex ? '' : r.prd() ? `Binding set: rooms brief ${r.name}` : '',
+    codex ? `Acceptance:\n${it.section('Acceptance')}\n\nInputs:\n${it.section('Inputs')}\n` : '',
+    codex && r.prd() ? `${cmdBinding(r)}\n` : '',
     `Scratch: ${scratch} (export TMPDIR=${scratch}; never /tmp). Cap: ${it.get('cap_h') || '?'}h.`,
     `Use ROOMS_AS=${who} for rooms commands. Finish with: write the Result in the item, then rooms done ${r.name} ${id} (or --review). Unplanned work you need: rooms need ${r.name} ${id} "<what and why>", then stop.`,
+    codex ? codexInstructions(r.name, id, who) : '',
     flag(a, 'brief'),
   ]
     .filter(Boolean)
     .join('\n')
+  if (codex) {
+    const run = newRun(r.name, id, { ...specFor(cwd, who, scratch, isRouted(r.name)), model, effort }, prompt)
+    it.set('backend', 'codex')
+    if (clone && who === clone) it.set('clone', clone)
+    it.set('state', 'doing')
+    it.set('agent', `codex:${run.runId}`)
+    logLine(it, by(), `set state=doing; spawned ${who} (codex run ${run.runId}) in ${cwd}; model: ${model ?? 'codex default'}, effort: ${effort ?? 'codex default'}`)
+    it.save()
+    publishWorking(r, it)
+    launchCodex(r.name, id) // after the item is saved: the runner edits it too
+    changed(r, `${id} spawned`)
+    return [...warns, `${id}: ${who} started (codex run ${run.runId}, ${model ?? 'codex default model'})`].join('\n')
+  }
   const s = startSession({ prompt, cwd, name: `${who} · ${id}`, model, effort, permissionMode: flag(a, 'permission-mode') || c.worker.permissionMode, disallowedTools: WORKER_DISALLOWED_TOOLS })
   it.set('state', 'doing')
+  if (it.get('backend')) it.set('backend', 'claude') // a respawn on another backend; absent stays absent
   it.set('agent', s.sessionId)
   if (clone && who === clone) it.set('clone', clone)
   logLine(it, by(), `set state=doing; spawned ${who} (session ${s.id}) in ${cwd}; model: ${model ?? 'default'}, effort: ${effort ?? 'default'}`)
@@ -912,6 +943,11 @@ export function sweep(): string[] {
       out.push(`${r.name}: ${(e as Error).message}`)
     }
   }
+  try {
+    out.push(...reconcileCodex())
+  } catch (e) {
+    out.push(`codex runs: ${(e as Error).message}`)
+  }
   const c = commit(undefined, `rooms: update at ${now()}`)
   if (c.sha) pushInBackground()
   return out
@@ -995,7 +1031,7 @@ Lead
         [--default b --due 90m]                      reversible: goes ahead unless the owner stops it
         [--premise | --todo --steps "..." | --text]  premise, a task for the owner, a free-text question
         [--decider <role>]                           a team decision, never on the page
-  rooms spawn <room> <Tnn> [--tier T] [--repo <path> [--base <branch>]] [--name N] [--brief "..."]
+  rooms spawn <room> <Tnn> [--backend claude|codex] [--tier T] [--repo <path> [--base <branch>]] [--name N] [--brief "..."]
   rooms spawn <room> --lead                         start a background lead session for the room
   rooms answer <room> <id> <letter|note> [--quote "owner's words"] [--note "..."] | --reply "text"
   rooms withdraw <room> <Dnn|An> "<reason>"          take an open card off the page; the record keeps the reason
@@ -1063,6 +1099,9 @@ async function runCommand(argv: string[]): Promise<{ text: string; code: number 
       return ok(cmdAsk(a))
     case 'spawn':
       return ok(cmdSpawn(a))
+    case 'run-codex': // internal: the detached runner behind spawn --backend codex
+      await runCodex(a._[0] ?? fail('usage: rooms run-codex <room> <Tnn>'), a._[1] ?? fail('item required'))
+      return ok('')
     case 'set':
       return ok(cmdSet(a))
     case 'withdraw':
