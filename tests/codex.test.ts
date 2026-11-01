@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Record } from '../src/record.ts'
@@ -181,4 +181,31 @@ test('codex sandbox covers the worktree git dir and the rooms git; network only 
   assert.doesNotMatch(args, /network_access/)
   const a = codexArgs({ cwd: '/w', who: 'x', scratch: '/s', sandbox: 'workspace-write', addDirs: [], network: true }, 'p')
   assert.ok(a.includes('sandbox_workspace_write.network_access=true'))
+})
+
+test('rooms done still tells the lead when scratch removal fails; the runner removes scratch once the item is done', async (t) => {
+  if (process.getuid?.() === 0) return t.skip('root ignores directory permissions')
+  const s = sandbox()
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'idle')
+  const scratch = join(s.env.CLAUDE_ROOMS_STATE!, 'scratch', 'r', 'T01')
+  assert.ok(existsSync(scratch))
+  const file = join(s.env.CLAUDE_ROOMS_HOME!, 'r', 'items', readdirSync(join(s.env.CLAUDE_ROOMS_HOME!, 'r', 'items')).find(f => f.startsWith('T01-'))!)
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/## Result[\s\S]*$/, '## Result\nDone: x\nArtifacts: x\nUnverified: x\nNext: none (test)\n'))
+  const parent = join(s.env.CLAUDE_ROOMS_STATE!, 'scratch', 'r')
+  chmodSync(parent, 0o555)
+  try {
+    const r = spawnSync(process.execPath, ['--no-warnings', CLI, 'done', 'r', 'T01', '--force'], { env: { ...s.env, CLAUDE_ROOMS_SESSION: 'some-worker' }, encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(r.stdout, /T01: done; lead told/)
+    assert.match(s.inbox(), /T01 \(Build\) is done/)
+    assert.ok(existsSync(scratch), 'removal failed, folder remains')
+  } finally {
+    chmodSync(parent, 0o755)
+  }
+  // a run that ends with the item done sheds the scratch folder itself
+  s.env.FAKE_CODEX_MODE = 'done'
+  s.env.FAKE_CODEX_DONE = `${process.execPath} --no-warnings ${CLI} set r T01 state=done`
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex', '--force')
+  await s.wait(() => s.run().state === 'idle' && !existsSync(scratch))
 })

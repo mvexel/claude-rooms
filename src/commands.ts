@@ -489,7 +489,12 @@ function cmdDone(a: Args): string {
   // Scratch is kept for review (--review); only a finished item sheds it.
   if (state === 'done') {
     const scratch = scratchDir(r.name, id)
-    if (existsSync(scratch)) rmSync(scratch, { recursive: true, force: true })
+    // Best effort: inside a Codex sandbox the removal can fail (EBUSY), and the lead must still hear.
+    try {
+      if (existsSync(scratch)) rmSync(scratch, { recursive: true, force: true })
+    } catch {
+      // the Codex runner (or prune) removes it later
+    }
   }
   changed(r, `${id} ${state}`)
   const told = tellLead(r, `${id} (${it.get('title')}) is ${state}, by ${by()}. Next: ${next}. Read its Result and take the next step.`)

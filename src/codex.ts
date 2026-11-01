@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { codexBin, config, roomsHome, stateDir } from './config.ts'
@@ -230,6 +230,8 @@ export async function runCodex(room: string, id: string): Promise<void> {
   run.notified = true
   writeRun(room, id, run)
   try { unlinkSync(lockFile(room, id)) } catch {}
+  // rooms done could not remove the scratch folder from inside the sandbox; the item is done, so do it here.
+  if (it.get('state') === 'done') try { rmSync(spec.scratch, { recursive: true, force: true }) } catch {}
 }
 
 // Write the Codex thread id onto the item (a small load-modify-save).
