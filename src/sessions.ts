@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { claudeBin, claudeDir } from './config.ts'
 
 // Claude Code sessions, the only backend. What rooms needs maps to:
@@ -118,7 +119,33 @@ export function currentSessionId(): string | undefined {
 }
 
 // Workers can't ask the owner; the plugin's tool.call hook denies it too.
-export const WORKER_DISALLOWED_TOOLS = 'AskUserQuestion'
+// EnterWorktree is off as well: a background session whose cwd is outside
+// .claude/worktrees is told to call it first, and the call stalls on a
+// permission prompt nobody answers. The worker already sits in its own worktree.
+export const WORKER_DISALLOWED_TOOLS = 'AskUserQuestion,EnterWorktree'
+
+// Claude refuses to start in a folder the owner never trusted ("Workspace not
+// trusted"). Trust is recorded per folder in ~/.claude.json; a folder inherits
+// it from an ancestor. Returns the untrusted folder, or undefined when fine.
+export function untrustedFolder(...dirs: string[]): string | undefined {
+  let projects: { [k: string]: { hasTrustDialogAccepted?: boolean } } = {}
+  try {
+    const file = process.env.CLAUDE_CONFIG_DIR ? join(claudeDir(), '.claude.json') : join(homedir(), '.claude.json')
+    projects = JSON.parse(readFileSync(file, 'utf8')).projects ?? {}
+  } catch {
+    return undefined // unreadable: let claude decide
+  }
+  for (const d of dirs) {
+    let cur = d
+    for (;;) {
+      if (projects[cur]?.hasTrustDialogAccepted) break
+      const up = dirname(cur)
+      if (up === cur) return d
+      cur = up
+    }
+  }
+  return undefined
+}
 
 export function startArgs(o: StartOptions): string[] {
   const args = ['--bg']

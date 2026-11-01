@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WORKER_DISALLOWED_TOOLS, isEnded, isRunning, liveness, startArgs } from '../src/sessions.ts'
+import { WORKER_DISALLOWED_TOOLS, untrustedFolder, isEnded, isRunning, liveness, startArgs } from '../src/sessions.ts'
 
 const kill = process.kill
 const killing = (code: string | null) => {
@@ -67,9 +67,25 @@ test('a session the sandboxed list omits is found in the registry by id or prefi
   assert.equal(liveness('abcdef12', []), 'dead')
 })
 
-test('worker spawn args disable AskUserQuestion; lead spawn args do not', () => {
+test('worker spawn args disable AskUserQuestion and EnterWorktree; lead spawn args do not', () => {
   const w = startArgs({ prompt: 'go', cwd: '.', disallowedTools: WORKER_DISALLOWED_TOOLS })
-  assert.deepEqual(w.slice(w.indexOf('--disallowedTools=AskUserQuestion')), ['--disallowedTools=AskUserQuestion', 'go'])
+  assert.deepEqual(w.slice(w.indexOf('--disallowedTools=AskUserQuestion,EnterWorktree')), ['--disallowedTools=AskUserQuestion,EnterWorktree', 'go'])
   assert.ok(!w.includes('--disallowedTools')) // a bare variadic flag would swallow the prompt
   assert.ok(!startArgs({ prompt: 'go', cwd: '.' }).includes('--disallowedTools'))
+})
+
+test('untrustedFolder: a folder is trusted by itself or an ancestor; else it is named', () => {
+  const home = mkdtempSync(join(tmpdir(), 'trust-'))
+  const cfg = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = home
+  try {
+    assert.equal(untrustedFolder('/x/repo-wt'), undefined) // no config: claude decides
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { '/x/trusted': { hasTrustDialogAccepted: true }, '/x/no': { hasTrustDialogAccepted: false } } }))
+    assert.equal(untrustedFolder('/x/trusted/sub/wt'), undefined)
+    assert.equal(untrustedFolder('/x/no'), '/x/no')
+    assert.equal(untrustedFolder('/x/trusted-wt'), '/x/trusted-wt') // beside, not under
+  } finally {
+    if (cfg === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = cfg
+  }
 })
