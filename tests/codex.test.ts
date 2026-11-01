@@ -251,7 +251,6 @@ test('tell during a run is queued once and delivered after the turn: no overlap,
   assert.equal(prompts.length, 1) // both messages in one resumed turn, delivered once
   assert.match(prompts[0], /one/)
   assert.equal(readFileSync(s.env.FAKE_CODEX_LOG!, 'utf8').split('\n').filter(l => l.startsWith('PROMPT:')).join('\n').split('two').length - 1, 1)
-  assert.equal(codexLiveness('r', 'T01').live, 'unknown')
 })
 
 test('concurrent tells to an idle worker start one run and deliver each message once', async () => {
@@ -283,4 +282,34 @@ test('tell to a failed run resumes it; no thread means held; unknown run record 
   rmSync(s.runFile)
   assert.match(s.ok('tell', 'r', 'x', '--item', 'T01'), /held: no run record/)
   assert.equal(promptLines(s).length, 1)
+})
+
+test('a resume that fails before its turn starts puts the messages back, first in line', async () => {
+  const s = sandbox()
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'idle')
+  s.env.FAKE_CODEX_RESUME = 'norollout'
+  s.ok('tell', 'r', 'first', '--item', 'T01')
+  await s.wait(() => s.run().state === 'failed')
+  assert.match(s.run().error, /no rollout found/)
+  delete s.env.FAKE_CODEX_RESUME
+  s.ok('tell', 'r', 'second', '--item', 'T01')
+  await s.wait(() => promptLines(s).length === 1 && s.run().state === 'idle')
+  const p = promptLines(s)[0]
+  assert.ok(p.indexOf('first') >= 0 && p.indexOf('first') < p.indexOf('second'), p)
+})
+
+test('a resumed turn on a done item still has its scratch folder; it goes after the final drain', async () => {
+  const s = sandbox()
+  s.env.FAKE_CODEX_MODE = 'done'
+  s.env.FAKE_CODEX_DONE = `${process.execPath} --no-warnings ${CLI} set r T01 state=done`
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  const scratch = join(s.env.CLAUDE_ROOMS_STATE!, 'scratch', 'r', 'T01')
+  await s.wait(() => s.run().state === 'idle' && !existsSync(scratch))
+  s.env.FAKE_CODEX_MODE = 'ok'
+  s.env.FAKE_CODEX_SLEEP = '1'
+  s.ok('tell', 'r', 'one more thing', '--item', 'T01')
+  await s.wait(() => promptLines(s).length === 1)
+  assert.ok(existsSync(scratch), 'scratch recreated for the resumed turn')
+  await s.wait(() => s.run().state === 'idle' && !existsSync(scratch))
 })

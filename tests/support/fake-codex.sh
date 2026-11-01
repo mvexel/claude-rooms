@@ -1,5 +1,6 @@
 #!/bin/sh
 # Stands in for codex. Logs argv and env facts to $FAKE_CODEX_LOG, then acts per $FAKE_CODEX_MODE:
+# FAKE_CODEX_RESUME=norollout: a resume exits 1 before any JSON, like codex with an unknown session.
 # Resume (`exec resume <id>`) logs PROMPT (the last arg) and emits no thread.started; FAKE_CODEX_SLEEP delays it.
 #   ok (default)  thread.started, turn.completed, exit 0 (no rooms done)
 #   done          also runs rooms done via $FAKE_CODEX_DONE (a shell command), then completes
@@ -15,7 +16,8 @@
   echo "SESSION:${CLAUDE_ROOMS_SESSION:-none}"
 } >> "$FAKE_CODEX_LOG"
 case "$1 $2" in
-  "exec resume") echo "PROMPT:$(for last; do :; done; echo "$last" | tr "\n" " ")" >> "$FAKE_CODEX_LOG"
+  "exec resume") [ "${FAKE_CODEX_RESUME:-}" = norollout ] && { echo "Error: no rollout found for thread id $5" >&2; exit 1; }
+    echo "PROMPT:$(for last; do :; done; echo "$last" | tr "\n" " ")" >> "$FAKE_CODEX_LOG"
     [ -n "$FAKE_CODEX_SLEEP" ] && sleep "$FAKE_CODEX_SLEEP";;
   *) echo '{"type":"thread.started","thread_id":"thread-abc"}';;
 esac
