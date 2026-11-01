@@ -458,6 +458,8 @@ export default () => ({
   const added = ok('add', 'hubbed', 'Second', '--cap', '1', '--acc', 'works')
   const item = added.match(/T01: (\S+)/)![1]
   assert.ok(item.startsWith(join(state, 'scratch', 'hubbed', 'T01')), item)
+  assert.equal(existsSync(item), false) // add makes no copy; the first command that touches the item does
+  ok('set', 'hubbed', 'T01', 'owner=builder')
   assert.ok(existsSync(item))
   assert.ok(existsSync(join(tree, 'now-head.md')))
 

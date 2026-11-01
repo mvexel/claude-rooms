@@ -19,14 +19,38 @@ export function workingPath(room: string, rec: Record): string {
 
 const baseOf = (file: string) => join(join(file, '..'), `.${basename(file)}.base`)
 
+// What this process itself took in from each file (syncIn, pullWorking): a file that still holds exactly
+// that text may be refreshed; one that holds anything else was edited by someone else meanwhile.
+const taken = new Map<string, string>()
+
+const readOr = (f: string): string | undefined => {
+  try {
+    return readFileSync(f, 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
+// Refresh `file` (and its base) with the hub's text, unless it holds an edit
+// nobody has taken in yet: then both stay for the next syncIn to merge.
+// Nothing is written when the bytes already match.
+function refresh(file: string, base: string, text: string): void {
+  const cur = readOr(file)
+  const was = readOr(base)
+  if (cur !== undefined && was !== undefined && cur !== was && cur !== taken.get(file)) return
+  if (cur !== text) {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, text)
+  }
+  if (was !== text) writeFileSync(base, text)
+  taken.delete(file)
+}
+
 // Make (or refresh) the working copy; returns its path. For a local room: the item itself.
 export function publishWorking(r: Room, rec: Record): string {
   const file = workingPath(r.name, rec)
   if (file === rec.path) return file
-  mkdirSync(join(file, '..'), { recursive: true })
-  const text = rec.toString()
-  writeFileSync(file, text)
-  writeFileSync(baseOf(file), text)
+  refresh(file, baseOf(file), rec.toString())
   return file
 }
 
@@ -34,8 +58,12 @@ export function publishWorking(r: Room, rec: Record): string {
 export function pullWorking(r: Room, rec: Record): void {
   const file = workingPath(r.name, rec)
   if (file === rec.path || !existsSync(file) || !existsSync(baseOf(file))) return
-  const mine = new Record(file, readFileSync(file, 'utf8'))
-  const base = new Record(file, readFileSync(baseOf(file), 'utf8'))
+  const text = readFileSync(file, 'utf8')
+  const baseText = readFileSync(baseOf(file), 'utf8')
+  if (text === baseText) return
+  taken.set(file, text)
+  const mine = new Record(file, text)
+  const base = new Record(file, baseText)
   for (const [name] of mine.sections) {
     if (name === 'Log') continue
     if (mine.section(name) !== base.section(name)) rec.setSection(name, mine.section(name))
@@ -142,6 +170,7 @@ export function syncIn(r: Room): void {
     }
     const base = readFileSync(baseFile, 'utf8')
     if (mine === base) continue
+    taken.set(file, mine)
     const hub = backend().read(key)
     if (hub === undefined || hub === base) {
       backend().write(key, mine)
@@ -161,12 +190,8 @@ export function syncIn(r: Room): void {
     }
   }
   // Item copies of this room (workers' and the lead's).
-  const items = join(stateDir(), 'scratch', r.name)
-  let ids: string[] = []
-  try {
-    ids = readdirSync(items).filter(d => /^T\d+$/.test(d))
-  } catch {}
-  for (const id of ids) {
+  for (const id of itemCopies(r)) {
+    if (!copyEdited(r, id)) continue
     let rec: Record
     try {
       rec = r.find(id)
@@ -179,6 +204,30 @@ export function syncIn(r: Room): void {
   }
 }
 
+// Item copies of the room that hold edits not yet taken in; unchanged ones cost nothing.
+function itemCopies(r: Room): string[] {
+  const items = join(stateDir(), 'scratch', r.name)
+  let ids: string[] = []
+  try {
+    ids = readdirSync(items).filter(d => /^T\d+$/.test(d))
+  } catch {}
+  return ids
+}
+
+// A copy whose bytes equal its base has no edit to take in.
+function copyEdited(r: Room, id: string): boolean {
+  const dir = scratchDir(r.name, id)
+  let names: string[] = []
+  try {
+    names = readdirSync(dir).filter(n => n.endsWith('.md') && !n.startsWith('.'))
+  } catch {}
+  return names.some(n => {
+    const file = join(dir, n)
+    const base = readOr(baseOf(file))
+    return base !== undefined && readOr(file) !== base
+  })
+}
+
 // Refresh the working tree and item copies from the hub.
 export function syncOut(r: Room): void {
   const root = treeDir(r.name)
@@ -186,16 +235,9 @@ export function syncOut(r: Room): void {
     const text = backend().read(join(r.dir, rel))
     if (text === undefined) continue
     const file = join(root, rel)
-    mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, text)
-    writeFileSync(treeBase(file), text)
+    refresh(file, treeBase(file), text)
   }
-  const items = join(stateDir(), 'scratch', r.name)
-  let ids: string[] = []
-  try {
-    ids = readdirSync(items).filter(d => /^T\d+$/.test(d))
-  } catch {}
-  for (const id of ids) {
+  for (const id of itemCopies(r)) {
     try {
       publishWorking(r, r.find(id))
     } catch {}
