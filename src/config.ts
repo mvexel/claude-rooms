@@ -71,22 +71,23 @@ export function overridesFile(): string {
 
 export type Overrides = {
   tiers?: { [name: string]: Tier }
-  worker?: { permissionMode?: string; tier?: string }
+  worker?: { tier?: string }
   lead?: { model?: string }
   provisionalMinutes?: number
   commitDebounceMs?: number
 }
 
 const isObj = (v: unknown): v is { [k: string]: unknown } => !!v && typeof v === 'object' && !Array.isArray(v)
-const nonEmpty = (v: unknown, what: string): string => {
+const nonEmpty = (v: unknown, what: string, flagSafe = false): string => {
   if (typeof v !== 'string' || !v.trim() || /[\r\n]/.test(v) || v.length > 200) throw new Error(`${what} must be a non-empty single-line string`)
+  // These become command-line values; a leading '-' would read as a flag.
+  if (flagSafe && v.trim().startsWith('-')) throw new Error(`${what} must not start with '-'`)
   return v.trim()
 }
 const num = (v: unknown, what: string, min: number): number => {
   if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > 10_000_000) throw new Error(`${what} must be a whole number of at least ${min}`)
   return v
 }
-const PERMISSION_MODES = ['auto', 'acceptEdits', 'default', 'plan', 'bypassPermissions', 'dontAsk']
 
 // A patch is a partial Overrides; null clears a key. Returns the cleaned patch
 // or throws with what is wrong. Unknown keys are refused, not dropped.
@@ -97,6 +98,7 @@ export function validatePatch(patch: unknown): { [k: string]: any } {
     if (k === 'provisionalMinutes') out[k] = v === null ? null : num(v, k, 30)
     else if (k === 'commitDebounceMs') out[k] = v === null ? null : num(v, k, 0)
     else if (k === 'tiers') {
+      if (v === null) { out.tiers = null; continue }
       if (!isObj(v)) throw new Error('tiers must be an object')
       out.tiers = {}
       for (const [name, t] of Object.entries(v)) {
@@ -106,23 +108,25 @@ export function validatePatch(patch: unknown): { [k: string]: any } {
         out.tiers[name] = {}
         for (const [f, x] of Object.entries(t)) {
           if (f !== 'model' && f !== 'effort') throw new Error(`tiers.${name}.${f} cannot be set here`)
-          out.tiers[name][f] = x === null ? null : nonEmpty(x, `tiers.${name}.${f}`)
+          out.tiers[name][f] = x === null ? null : nonEmpty(x, `tiers.${name}.${f}`, true)
         }
       }
     } else if (k === 'worker') {
+      if (v === null) { out.worker = null; continue }
       if (!isObj(v)) throw new Error('worker must be an object')
       out.worker = {}
       for (const [f, x] of Object.entries(v)) {
-        if (f !== 'permissionMode' && f !== 'tier') throw new Error(`worker.${f} cannot be set here`)
-        out.worker[f] = x === null ? null : nonEmpty(x, `worker.${f}`)
-        if (f === 'permissionMode' && x !== null && !PERMISSION_MODES.includes(out.worker[f])) throw new Error(`worker.permissionMode must be one of ${PERMISSION_MODES.join(', ')}`)
+        if (f === 'permissionMode') throw new Error('worker.permissionMode is read-only here; edit config.json by hand')
+        if (f !== 'tier') throw new Error(`worker.${f} cannot be set here`)
+        out.worker[f] = x === null ? null : nonEmpty(x, 'worker.tier')
       }
     } else if (k === 'lead') {
+      if (v === null) { out.lead = null; continue }
       if (!isObj(v)) throw new Error('lead must be an object')
       out.lead = {}
       for (const [f, x] of Object.entries(v)) {
         if (f !== 'model') throw new Error(`lead.${f} is read-only here; edit config.json by hand`)
-        out.lead[f] = x === null ? null : nonEmpty(x, 'lead.model')
+        out.lead[f] = x === null ? null : nonEmpty(x, 'lead.model', true)
       }
     } else throw new Error(`'${k}' cannot be set here`)
   }
@@ -174,16 +178,25 @@ function readJsonFile(file: string): any {
 }
 
 // Keep only what the page may override, so a hand-edited overrides file cannot
-// widen the lead's privileges either.
-function sane(raw: any): Overrides {
-  const o: Overrides = {}
+// widen privileges either. Privilege keys are dropped and reported; any other
+// invalid value voids the whole file (reported), never half applied.
+function sane(raw: any): { o: Overrides; error?: string } {
+  const dropped: string[] = []
+  if (isObj(raw)) {
+    raw = { ...raw }
+    for (const [sec, key] of [['lead', 'permissionMode'], ['lead', 'allowedTools'], ['worker', 'permissionMode']]) {
+      if (isObj(raw[sec]) && key in raw[sec]) { raw[sec] = { ...raw[sec] }; delete raw[sec][key]; dropped.push(`${sec}.${key}`) }
+    }
+  }
+  const note = dropped.length ? `ignored ${dropped.join(', ')} (edit config.json by hand)` : undefined
   try {
     const p = validatePatch(raw)
+    const o: Overrides = {}
     for (const k of Object.keys(p)) if (p[k] !== null) (o as any)[k] = p[k]
-  } catch {
-    // an invalid overrides file is ignored whole, not half applied
+    return { o, error: note }
+  } catch (e) {
+    return { o: {}, error: `overrides file ignored: ${(e as Error).message}` }
   }
-  return o
 }
 
 function merge(user: Partial<Config>, over: Overrides): Config {
@@ -205,7 +218,7 @@ const stamp = (f: string) => {
   try { return statSync(f).mtimeMs + ':' + statSync(f).size } catch { return '-' }
 }
 
-export type Layers = { defaults: Config; file: Partial<Config>; overrides: Overrides; effective: Config }
+export type Layers = { defaults: Config; file: Partial<Config>; overrides: Overrides; overridesError?: string; effective: Config }
 let cached: { key: string; layers: Layers } | undefined
 
 // Re-read when either file changes, so page edits and hand edits apply without
@@ -215,8 +228,13 @@ export function configLayers(): Layers {
   if (cached?.key === key) return cached.layers
   const file: Partial<Config> = readJsonFile(configFile())
   let overrides: Overrides = {}
-  try { overrides = sane(readJsonFile(overridesFile())) } catch { /* unreadable: no overrides */ }
-  const layers = { defaults: DEFAULTS, file, overrides, effective: merge(file, overrides) }
+  let overridesError: string | undefined
+  try {
+    const r = sane(readJsonFile(overridesFile()))
+    overrides = r.o
+    overridesError = r.error
+  } catch (e) { overridesError = `overrides file unreadable: ${(e as Error).message}` }
+  const layers = { defaults: DEFAULTS, file, overrides, overridesError, effective: merge(file, overrides) }
   cached = { key, layers }
   return layers
 }

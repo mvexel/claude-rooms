@@ -1103,6 +1103,7 @@ function settingsView() {
       editable ? h("div", { style: "display:flex;gap:6px;flex:1 1 220px" }, input,
         h("button", { class: "chip", onclick: () => saveSetting(x.key, input.value, isNum) }, "Save"),
         x.from === "page" ? h("button", { class: "chip", onclick: () => saveSetting(x.key, null, false) }, "Reset") : null) : input,
+      editable ? h("span", { class: "small", style: "flex-basis:100%" }, "Applies to the " + x.applies) : null,
       !x.editable ? h("span", { class: "small" }, "Edit config.json by hand (privilege setting)") : null);
   });
   f.append(h("div", { class: "items" }, rows));
@@ -1116,7 +1117,9 @@ function settingsView() {
     line("Server", `${sv.host}:${sv.port}${sv.read_only ? " (read-only)" : ""}`),
     line("Allowed users", (sv.allowed_users || []).join(", ") || "loopback only"),
     line("Rooms", pulse),
+    st.overrides_error ? h("p", { class: "small", style: "margin:0 0 4px;color:var(--critical)", role: "alert" }, "Overrides: " + st.overrides_error) : null,
     line("Live sessions", String((st.sessions || []).length)),
+    ...(st.sessions || []).map(x => h("p", { class: "small", style: "margin:0 0 4px 12px" }, `${x.name || x.id} · ${x.status || "?"} · ${x.age_min === undefined ? "age unknown" : x.age_min < 60 ? x.age_min + "m" : Math.floor(x.age_min / 60) + "h"}`)),
     line("Lead leases", (st.lead_leases || []).map(l => `${l.room} ${l.fresh ? "fresh" : "stale"}`).join(", ") || "none") ,
     line("Lease counts fresh for", `${st.lease_fresh_seconds}s`),
     line("Last sweep", st.last_sweep ? `${ago(st.last_sweep.at)} ${st.last_sweep.ok ? "ok" : "failed: " + st.last_sweep.error}` : "none yet"),

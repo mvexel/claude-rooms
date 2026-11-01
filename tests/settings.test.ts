@@ -44,12 +44,29 @@ test('null resets a key to the default', () => {
 })
 
 test('invalid patches are refused; the lead privilege keys are file-only', () => {
-  for (const bad of [{ provisionalMinutes: 5 }, { provisionalMinutes: 'x' }, { tiers: { a: { model: '' } } }, { tiers: { a: { color: 'x' } } }, { lead: { permissionMode: 'auto' } }, { lead: { allowedTools: [] } }, { worker: { permissionMode: 'nope' } }, { bogus: 1 }, []])
+  for (const bad of [{ provisionalMinutes: 5 }, { provisionalMinutes: 'x' }, { tiers: { a: { model: '' } } }, { tiers: { a: { color: 'x' } } }, { lead: { permissionMode: 'auto' } }, { lead: { allowedTools: [] } }, { worker: { permissionMode: 'auto' } }, { tiers: { a: { model: '--dangerous' } } }, { lead: { model: ' -x' } }, { tiers: { a: { effort: '-1' } } }, { bogus: 1 }, []])
     assert.throws(() => validatePatch(bad), undefined, JSON.stringify(bad))
   assert.throws(() => checkEffective(mergePatch({}, validatePatch({ worker: { tier: 'ghost' } })), {}), /not a defined tier/)
 })
 
-test('a hand-written overrides file cannot set the lead privileges', () => {
-  writeFileSync(process.env.CLAUDE_ROOMS_OVERRIDES!, JSON.stringify({ lead: { permissionMode: 'bypassPermissions' } }))
+test('a hand-written overrides file cannot set privileges; the rest still applies and the error shows', () => {
+  writeFileSync(process.env.CLAUDE_ROOMS_OVERRIDES!, JSON.stringify({ lead: { permissionMode: 'bypassPermissions' }, worker: { permissionMode: 'bypassPermissions', tier: 'review' } }))
   assert.equal(config().lead.permissionMode, 'auto')
+  assert.equal(config().worker.permissionMode, 'auto')
+  assert.equal(config().worker.tier, 'review')
+  assert.match(configLayers().overridesError!, /lead\.permissionMode, worker\.permissionMode/)
+})
+
+test('an invalid overrides file is ignored whole and its error is reported', () => {
+  writeFileSync(process.env.CLAUDE_ROOMS_OVERRIDES!, JSON.stringify({ provisionalMinutes: 3 }))
+  assert.equal(config().provisionalMinutes, 90)
+  assert.match(configLayers().overridesError!, /provisionalMinutes/)
+  writeFileSync(process.env.CLAUDE_ROOMS_OVERRIDES!, '{ not json')
+  assert.match(configLayers().overridesError!, /unreadable/)
+})
+
+test('a top-level null resets a whole section', () => {
+  saveOverrides({ tiers: { light: { model: 'm9' } }, worker: { tier: 'review' }, lead: { model: 'z' }, provisionalMinutes: 50 })
+  const next = mergePatch(configLayers().overrides, validatePatch({ tiers: null, worker: null, lead: null, provisionalMinutes: null }))
+  assert.deepEqual(next, {})
 })
