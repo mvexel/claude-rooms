@@ -3,16 +3,18 @@ import { type Dirent, appendFileSync, cpSync, existsSync, mkdirSync, readFileSyn
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { backend, loadBackend } from './backend.ts'
+import { HUB_TIMEOUT_MS, backend, isRouted, loadBackend, routingActive } from './backend.ts'
+import { watchdog } from './watchdog.ts'
 import { applyDueDefaults, recordAnswer } from './answer.ts'
 import { claudeBin, claudeDir, config, legacyStateDir, roomsHome, scratchDir, stateDir } from './config.ts'
 import { autocommit, commit, excludeLocal, git, pushInBackground, unwritable, withLock } from './git.ts'
 import { applyUserSandbox, planUserSandbox, sandboxGap } from './sandbox.ts'
 import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
+import { editDir, editPath, findWorkItem, publishWorking, syncIn, syncOut } from './working.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
 import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession, WORKER_DISALLOWED_TOOLS } from './sessions.ts'
-import { isHuman, roomState } from './state.ts'
+import { isHuman, roomState, tryRoomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
 import { repositoryIdentity, repositoryRoot, workerWorktree } from './repositories.ts'
 import { pruneCandidates, pruneRoom } from './prune.ts'
@@ -290,7 +292,7 @@ function createRoom(a: Args): string {
   if (has(a, 'feature')) backend().write(join(r.dir, 'PRD.md'), readFileSync(join(ROOT, 'templates', 'prd.md'), 'utf8').replace('{title}', title).replace('{now}', now()))
   changed(r, 'new room')
   return [
-    `created ${r.dir}${lead ? ` · lead session ${lead}` : ' · no lead session: events run one-shot lead turns until one claims it (rooms lead)'}`,
+    `created ${editDir(r)}${lead ? ` · lead session ${lead}` : ' · no lead session: events run one-shot lead turns until one claims it (rooms lead)'}`,
     has(a, 'feature') ? `PRD.md drafted from the template. Building is locked until the owner agrees it (rooms prd ${name} review); research items (rooms add --research) may run before.` : '',
   ]
     .filter(Boolean)
@@ -325,7 +327,8 @@ function cmdAdd(a: Args): string {
     ['Result', 'Done:\nArtifacts:\nUnverified:\nNext:'],
   ])
   changed(r, `${id} added`)
-  return `${id}: ${rec.path}`
+  // A routed room's item is on the hub: the lead edits a working copy, so make it (the path printed exists).
+  return `${id}: ${publishWorking(r, rec)}`
 }
 
 // Who gets a card: the owner sees one-way doors, premises, gates, todos and
@@ -387,7 +390,7 @@ function cmdAsk(a: Args): string {
   ], sections)
   changed(r, `${id} asked`)
   const where = !isHuman(decider) ? `team decision for ${decider} (not on the page)` : status === 'provisional' ? `goes ahead with ${def} at ${due} unless the owner stops it` : 'on the owner\'s page'
-  return `${id}: ${where} · ${rec.path}`
+  return `${id}: ${where} · ${editPath(r, rec.path)}`
 }
 
 function briefGaps(it: Record): string[] {
@@ -412,7 +415,7 @@ function guardStart(r: Room, it: Record, force: boolean): string[] {
 function cmdSet(a: Args): string {
   const [name, id, ...pairs] = a._
   const r = room(name)
-  const rec = id === 'PRD' ? (r.prd() ?? fail('no PRD.md')) : r.find(id ?? fail('id required'))
+  const rec = id === 'PRD' ? (r.prd() ?? fail('no PRD.md')) : findWorkItem(r, id ?? fail('id required'))
   const kv = pairs.map(p => {
     const i = p.indexOf('=')
     if (i < 1) fail(`not key=value: ${p}`)
@@ -427,6 +430,7 @@ function cmdSet(a: Args): string {
   if (rec.sections.some(s => s[0] === 'Log')) logLine(rec, by(), `set ${pairs.join(' ')}`)
   else rec.set('updated', now())
   rec.save()
+  if (id.startsWith('T')) publishWorking(r, rec)
   changed(r, `${id} ${pairs.join(' ')}`)
   return [...warns, `${id}: ${pairs.join(' ')}`].join('\n')
 }
@@ -434,9 +438,10 @@ function cmdSet(a: Args): string {
 function cmdLog(a: Args): string {
   const [name, id, text] = a._
   const r = room(name)
-  const rec = r.find(id ?? fail('id required'))
+  const rec = findWorkItem(r, id ?? fail('id required'))
   logLine(rec, by(), text || fail('text required'))
   rec.save()
+  if (id.startsWith('T')) publishWorking(r, rec)
   changed(r, `${id} log`)
   return `${id}: logged`
 }
@@ -446,7 +451,7 @@ function cmdNeed(a: Args): string {
   const r = room(name)
   refuseClosed(r, 'a need')
   if (!id?.startsWith('T')) fail('a need is on an item (Tnn)')
-  const it = r.find(id)
+  const it = findWorkItem(r, id)
   if (!['doing', 'todo'].includes(it.get('state'))) fail(`${id} is ${it.get('state')}`)
   const text = (raw ?? '').replace(/\s+/g, ' ').trim() || fail('say what is missing and why')
   const needs = flag(a, 'needs')
@@ -456,6 +461,7 @@ function cmdNeed(a: Args): string {
   it.appendTo('Needs', `- ${hhmm()} ${by()}: ${text}${tail}`)
   logLine(it, by(), `need: ${text}${tail}; state=blocked`)
   it.save()
+  publishWorking(r, it)
   changed(r, `${id} blocked`)
   const told = tellLead(r, `${id} (${it.get('title')}) is blocked by ${by()}: ${text}${tail}. Decide now: an existing item first (depends_on), a small new prerequisite inside the PRD, or a scope change (refinement or card). Then flip it back and tell the worker.`)
   return `${id} blocked; ${told}. Stop here and end your turn with this need as your report.`
@@ -465,7 +471,7 @@ function cmdDone(a: Args): string {
   const [name, id] = a._
   const r = room(name)
   if (!id?.startsWith('T')) fail('usage: rooms done <room> <Tnn> [--review]')
-  const it = r.find(id)
+  const it = findWorkItem(r, id)
   const res = it.section('Result')
   const field = (k: string) => (res.match(new RegExp(`^${k}:[ \\t]*(.*)$`, 'm'))?.[1] ?? '').trim()
   if (!field('Done')) fail(`${id}: write the Result first (Done:, Artifacts:, Unverified:, Next:)`)
@@ -585,7 +591,7 @@ function cmdRf(a: Args): string {
       ['Sign-off', 'Lead:\nOwner:'],
     ])
     changed(r, `${id} drafted`)
-    return `${id}: ${rec.path}`
+    return `${id}: ${editPath(r, rec.path)}`
   }
   if (/^RF\d+$/.test(verb ?? '') && arg === 'review') {
     const rf = r.find(verb)
@@ -676,14 +682,29 @@ export function setPaused(r: Room, on: boolean): string {
 
 // ---- views -----------------------------------------------------------------
 
+// A routed room that can't be read counts as open: the overview lists it as unreachable.
+function closedOrUnknown(r: Room): boolean {
+  try {
+    return r.isClosed()
+  } catch (e) {
+    if (isRouted(r.name)) return false
+    throw e
+  }
+}
+
 function cmdStatus(a: Args): { text: string; code: number } {
   const sessions = listSessions()
-  const rooms = a._.length ? a._.map(n => room(n)) : Room.all().filter(r => !r.isClosed())
+  const rooms = a._.length ? a._.map(n => room(n)) : Room.all().filter(r => !closedOrUnknown(r))
   if (!rooms.length) return { text: `no rooms in ${roomsHome()}`, code: 0 }
-  if (has(a, 'json')) return { text: JSON.stringify(rooms.map(r => ({ room: r.name, ...pick(roomState(r, { sessions, yielding: has(a, 'yield') })) }))), code: 0 }
+  // With rooms named, a failure is the answer; in the overview, a room on the
+  // hub that cannot be read is listed as unreachable and the rest still show.
+  const states = rooms.map(r => (a._.length ? { st: roomState(r, { sessions, yielding: has(a, 'yield') }) } : tryRoomState(r, { sessions, yielding: has(a, 'yield') })))
+  if (has(a, 'json')) return { text: JSON.stringify(rooms.map((r, i) => ('st' in states[i] ? { room: r.name, ...pick(states[i].st) } : { room: r.name, unreachable: true, error: states[i].error }))), code: 0 }
   let stuck = false
-  const out = rooms.map(r => {
-    const st = roomState(r, { sessions, yielding: has(a, 'yield') })
+  const out = rooms.map((r, i) => {
+    const s = states[i]
+    if (!('st' in s)) return `${r.name} · UNREACHABLE: ${s.error}`
+    const st = s.st
     if (has(a, 'yield') && st.status === 'stuck') stuck = true
     let t = statusText(r, st, has(a, 'brief'))
     if (has(a, 'yield') && st.dispatchable.length) t += `\n  ${st.dispatchable.join(' ')} ready with no agent: dispatch before you end your turn`
@@ -727,7 +748,7 @@ function cmdSpawn(a: Args): string {
     changed(r, 'lead session started')
     return `${r.name}: lead session ${s.id} started`
   }
-  const it = r.find(id ?? fail('usage: rooms spawn <room> <Tnn> [--tier light|standard|review] [--repo <path> [--base <branch>]] | --lead'))
+  const it = findWorkItem(r, id ?? fail('usage: rooms spawn <room> <Tnn> [--tier light|standard|review] [--repo <path> [--base <branch>]] | --lead'))
   if (it.get('agent')) {
     const sessions = listSessions()
     const s = findSession(it.get('agent'), sessions)
@@ -763,9 +784,12 @@ function cmdSpawn(a: Args): string {
     fail(unwritable(scratch, e as Error))
   }
   const who = flag(a, 'name') || it.get('owner') || 'worker'
+  // A routed room's item is on the hub; the worker edits a working copy that the commands sync.
+  const itemFile = publishWorking(r, it)
   const prompt = [
     `You are ${who} on item ${id} (${it.get('title')}) in room ${r.name}. Load the rooms:worker skill first.`,
-    `Your item: ${it.path}`,
+    `Your item: ${itemFile}`,
+    itemFile === it.path ? '' : `(${r.name} is on the hub: this is a working copy. Edit it freely; rooms log, set, need and done take your edits to the hub.)`,
     r.prd() ? `Binding set: rooms brief ${r.name}` : '',
     `Scratch: ${scratch} (export TMPDIR=${scratch}; never /tmp). Cap: ${it.get('cap_h') || '?'}h.`,
     `Use ROOMS_AS=${who} for rooms commands. Finish with: write the Result in the item, then rooms done ${r.name} ${id} (or --review). Unplanned work you need: rooms need ${r.name} ${id} "<what and why>", then stop.`,
@@ -778,6 +802,7 @@ function cmdSpawn(a: Args): string {
   it.set('agent', s.sessionId)
   logLine(it, by(), `set state=doing; spawned ${who} (session ${s.id}) in ${cwd}; model: ${model ?? 'default'}, effort: ${effort ?? 'default'}`)
   it.save()
+  publishWorking(r, it)
   changed(r, `${id} spawned`)
   return [...warns, `${id}: ${who} started (session ${s.id}, ${model ?? 'default model'})`].join('\n')
 }
@@ -892,6 +917,20 @@ function cmdHook(a: Args): string {
   }
   const session = sessionArg(a) || fail('--session required')
   const me = whoami(session)
+  // A routed lead's edits to the working tree go to the hub (no hub call when nothing changed).
+  let syncNote = ''
+  if ((verb === 'poll' || verb === 'stop') && me.role === 'lead' && me.room && isRouted(me.room)) {
+    try {
+      const lr = new Room(me.room)
+      if (lr.exists()) {
+        const w = syncIn(lr)
+        if (w.length) syncNote = `[rooms] Your edits to the working tree were not all taken in: ${w.join('; ')}`
+      }
+    } catch (e) {
+      syncNote = `[rooms] Could not take your working-tree edits to the hub: ${(e as Error).message}`
+    }
+  }
+  if (verb === 'stop' && syncNote && me.role === 'lead') return syncNote
   if (verb === 'poll') {
     // Hold the lease on this session's inbox (the room's for the lead, the
     // item's for a worker), and take what waits when asked to.
@@ -901,7 +940,7 @@ function cmdHook(a: Args): string {
     if (!me.room) return JSON.stringify(mail ? { ...me, events: mail } : me)
     const key = me.role === 'lead' ? me.room : `${me.room}/${me.item}`
     beat(key, session)
-    const text = [mail, has(a, 'take') ? render(key, take(key)) : ''].filter(Boolean).join('\n\n')
+    const text = [syncNote, mail, has(a, 'take') ? render(key, take(key)) : ''].filter(Boolean).join('\n\n')
     return JSON.stringify({ ...me, events: text, status_line: roomStatusLine(new Room(me.room)) })
   }
   if (verb === 'stop') {
@@ -968,8 +1007,30 @@ Setup and plumbing
 
 Set ROOMS_AS=<name> so Log lines carry it.`
 
+// Commands whose first argument is a room.
+const ROOM_FIRST = new Set(['new', 'add', 'ask', 'spawn', 'set', 'withdraw', 'log', 'need', 'done', 'answer', 'prd', 'rf', 'brief', 'status', 'pause', 'resume', 'close', 'prune', 'tell', 'lead', 'chat'])
+
+// In a routed room, take the working tree's edits to the hub before the command
+// and refresh the tree after it.
 export async function run(argv: string[]): Promise<{ text: string; code: number }> {
   await loadBackend()
+  const name = ROOM_FIRST.has(argv[0] ?? '') && /^[a-z0-9][a-z0-9-]*$/.test(argv[1] ?? '') ? argv[1] : undefined
+  if (!name || !isRouted(name)) return runCommand(argv)
+  const r = new Room(name)
+  if (argv[0] !== 'new' && r.exists()) syncIn(r)
+  try {
+    return await runCommand(argv)
+  } finally {
+    try {
+      if (r.exists()) syncOut(r)
+    } catch (e) {
+      process.stderr.write(`rooms: working copy of ${name} not refreshed: ${(e as Error).message}\n`)
+    }
+  }
+}
+
+async function runCommand(argv: string[]): Promise<{ text: string; code: number }> {
+  if (argv[0] === 'hook' && routingActive()) watchdog(HUB_TIMEOUT_MS + 4000, 'the hook')
   const a = parseArgs(argv, BOOLEANS)
   const cmd = a._.shift() ?? 'help'
   if (cmd !== 'init') moveLegacyState()
@@ -1008,7 +1069,11 @@ export async function run(argv: string[]): Promise<{ text: string; code: number 
     case 'rf':
       return ok(cmdRf(a))
     case 'brief':
-      return ok(cmdBinding(room(a._[0])) || `${a._[0]} has no PRD`)
+    {
+      const r = room(a._[0])
+      const text = cmdBinding(r) || `${a._[0]} has no PRD`
+      return ok(isRouted(r.name) ? `${text}\n\n(on the hub: working copy of the room's files in ${editDir(r)})` : text)
+    }
     case 'statusline': {
       if (a._[0]) return ok(roomStatusLine(room(a._[0])))
       let session = flag(a, 'session')

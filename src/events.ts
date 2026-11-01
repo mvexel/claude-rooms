@@ -2,10 +2,11 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { backend } from './backend.ts'
+import { backend, sendReceiptToHub } from './backend.ts'
 import { LEASE_FRESH_MS, claudeBin, config, roomsHome, stateDir } from './config.ts'
 import { withLock } from './git.ts'
 import { Room } from './room.ts'
+import { editDir } from './working.ts'
 import { findSession, isEnded, isRunning, liveness, listSessions, resumeStopped } from './sessions.ts'
 
 // Events: everything the lead must hear (a tap, a worker done, a need) is
@@ -42,15 +43,18 @@ function readReceipts(): Receipts {
   }
 }
 
-export function setReceipt(ids: string[], delivery: Delivery, error?: string): void {
+export function setReceipt(ids: string[], delivery: Delivery, error?: string, room?: string): void {
   if (!ids.length) return
+  let mine = ''
   withLock('receipts', () => {
     const r = readReceipts()
     const cutoff = Date.now() - 7 * 86_400_000
     for (const [k, v] of Object.entries(r)) if (Date.parse(v.at) < cutoff) delete r[k]
     for (const id of ids) r[id] = { delivery, at: stamp(), ...(error ? { error } : {}) }
     backend().write(receiptsFile(), JSON.stringify(r))
+    mine = JSON.stringify(Object.fromEntries(ids.map(id => [id, r[id]])))
   })
+  if (room) sendReceiptToHub(room, receiptsFile(), mine)
 }
 
 export function receipts(ids: string[]): { id: string; delivery: Delivery | 'unknown'; at?: string; error?: string }[] {
@@ -63,12 +67,12 @@ export function receipts(ids: string[]): { id: string; delivery: Delivery | 'unk
 export function emit(room: string, text: string, opts: { dispatch?: boolean } = {}): string {
   const ev: Event = { id: randomUUID().slice(0, 12), at: stamp(), text: text.trim() }
   backend().append(inboxFile(room), JSON.stringify(ev) + '\n')
-  setReceipt([ev.id], 'saved')
+  setReceipt([ev.id], 'saved', undefined, room)
   if (opts.dispatch !== false) {
     try {
       dispatch(room)
     } catch (e) {
-      setReceipt([ev.id], 'error', (e as Error).message)
+      setReceipt([ev.id], 'error', (e as Error).message, room)
     }
   }
   return ev.id
@@ -87,7 +91,7 @@ export function take(room: string): Event[] {
     .split('\n')
     .filter(Boolean)
     .map(l => JSON.parse(l) as Event)
-  setReceipt(evs.map(e => e.id), 'lead_read')
+  setReceipt(evs.map(e => e.id), 'lead_read', undefined, room)
   return evs
 }
 
@@ -129,7 +133,7 @@ export function dispatch(roomName: string): { route: Route; why: string } {
   if (room.isClosed()) return { route: 'held', why: 'room is closed' }
   return withLock(`dispatch-${roomName}`, () => {
     if (leaseFresh(room)) {
-      setReceipt(evs.map(e => e.id), 'lead_told')
+      setReceipt(evs.map(e => e.id), 'lead_told', undefined, roomName)
       return { route: 'live-lead' as Route, why: 'the lead session picks it up' }
     }
     const t = turnRunning(roomName)
@@ -168,7 +172,7 @@ function startTurn(room: Room, evs: Event[]): void {
   const c = config()
   const prompt = [
     `You are the lead of room ${room.name} for one turn. Load the rooms:lead skill.`,
-    `Room record: ${room.dir}. Start with: rooms status ${room.name}`,
+    `Room record: ${editDir(room)}. Start with: rooms status ${room.name}`,
     render(room.name, evs),
     'Handle these events: take the next step (dispatch, decide, or ask the owner), keep the record current, then end your turn. Do not wait for workers; their results come back as new events.',
   ].join('\n\n')
@@ -188,7 +192,7 @@ function startTurn(room: Room, evs: Event[]): void {
   })
   writeFileSync(turnFile(room.name), JSON.stringify({ pid: child.pid, at: stamp(), events: evs.map(e => e.id) }))
   child.unref()
-  setReceipt(evs.map(e => e.id), 'lead_told')
+  setReceipt(evs.map(e => e.id), 'lead_told', undefined, room.name)
 }
 
 // ---- workers -----------------------------------------------------------------
@@ -200,7 +204,7 @@ export function tellWorker(room: Room, itemId: string, agent: string, text: stri
   const id = emit(key, text, { dispatch: false })
   const l = lease(key)
   if (l && l.session === agent && Date.now() - l.at < LEASE_FRESH_MS) {
-    setReceipt([id], 'lead_told')
+    setReceipt([id], 'lead_told', undefined, key)
     return 'the worker picks it up'
   }
   const sessions = listSessions()
