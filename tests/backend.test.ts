@@ -398,3 +398,94 @@ export default () => ({
   assert.match(hubText, /halfway/)
   assert.equal(existsSync(join(base, 'rooms', 'hubbed', 'items')), false)
 })
+
+test('in a routed room the lead and workers edit now-head, BRIEF, notes and an item in a working tree; every command takes it to the hub', () => {
+  const base = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'rooms-tree-'))
+  const state = join(base, 'state')
+  const hub = join(base, 'hub')
+  mkdirSync(hub)
+  const fake = join(base, 'claude')
+  writeFileSync(fake, `#!/bin/sh\ncase "$1" in agents) echo '[]'; exit 0;; esac\necho "backgrounded · abc123"\n`)
+  chmodSync(fake, 0o755)
+  const mod = join(base, 'hubmod.ts')
+  writeFileSync(
+    mod,
+    `import { localBackend } from ${JSON.stringify(resolve(import.meta.dirname, '..', 'src', 'backend.ts'))}
+const dir = ${JSON.stringify(hub)}
+const flat = (p: string) => p.replace(/[\\\\/]/g, '_')
+const key = (p: string) => dir + '/' + flat(p)
+export default () => ({
+  read: (p: string) => localBackend.read(key(p)),
+  write: (p: string, t: string) => localBackend.write(key(p), t),
+  append: (p: string, t: string) => localBackend.append(key(p), t),
+  exists: (p: string) => localBackend.exists(key(p)),
+  list: (d: string) => localBackend.list(dir).filter(e => e.name.startsWith(flat(d) + '_') && !e.name.slice(flat(d).length + 1).includes('_')).map(e => ({ name: e.name.slice(flat(d).length + 1), dir: false })),
+  remove: (p: string) => localBackend.remove(key(p)),
+  claim: (p: string) => localBackend.claim(key(p)),
+})
+`,
+  )
+  mkdirSync(state)
+  writeFileSync(join(state, 'backend.json'), JSON.stringify({ module: mod, rooms: ['hubbed'] }))
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CLAUDE_ROOMS_HOME: join(base, 'rooms'),
+    CLAUDE_ROOMS_STATE: state,
+    CLAUDE_ROOMS_CONFIG: join(base, 'none.json'),
+    CLAUDE_ROOMS_CLAUDE: fake,
+    ROOMS_AS: 'builder',
+    GIT_AUTHOR_NAME: 't',
+    GIT_AUTHOR_EMAIL: 't@example.invalid',
+    GIT_COMMITTER_NAME: 't',
+    GIT_COMMITTER_EMAIL: 't@example.invalid',
+  }
+  delete env.CLAUDE_ROOMS_BACKEND
+  const rooms = (...args: string[]) => spawnSync(process.execPath, ['--no-warnings', CLI, ...args], { env, encoding: 'utf8' })
+  const ok = (...args: string[]) => {
+    const r = rooms(...args)
+    assert.equal(r.status, 0, r.stderr + r.stdout)
+    return r.stdout
+  }
+  const hubFile = (name: string) => join(hub, readdirSync(hub).find(f => f.endsWith(name)) ?? `missing-${name}`)
+  const onHub = (name: string) => readFileSync(hubFile(name), 'utf8')
+  const repo = join(base, 'repo')
+  mkdirSync(repo)
+  spawnSync('git', ['init', '-q', repo])
+  ok('init')
+  const tree = join(state, 'work', 'hubbed')
+  assert.match(ok('new', 'hubbed', 'Hubbed', '--session', 'l2', '--repo', repo), new RegExp(`created ${tree}`))
+  assert.match(ok('status', 'hubbed'), new RegExp(`edit BRIEF.md, now-head.md.* in ${tree}`))
+  const added = ok('add', 'hubbed', 'Second', '--cap', '1', '--acc', 'works')
+  const item = added.match(/T01: (\S+)/)![1]
+  assert.ok(item.startsWith(join(state, 'scratch', 'hubbed', 'T01')), item)
+  assert.ok(existsSync(item))
+  assert.ok(existsSync(join(tree, 'now-head.md')))
+
+  // lead: waiting:/resume: in now-head, a BRIEF section, an item section; a worker: a note
+  const edit = (f: string, from: string | RegExp, to: string) => writeFileSync(f, readFileSync(f, 'utf8').replace(from, to))
+  edit(join(tree, 'now-head.md'), /waiting:.*/, 'waiting: owner reply on X')
+  edit(join(tree, 'now-head.md'), /resume:.*/, 'resume: 2099-01-01T00:00Z')
+  edit(join(tree, 'BRIEF.md'), /## Team\n.*/, '## Team\nbuilder: standard')
+  edit(item, '- [ ] works', '- [ ] works well')
+  mkdirSync(join(tree, 'notes'), { recursive: true })
+  writeFileSync(join(tree, 'notes', 'builder.md'), '# notes\nhello\n')
+  ok('status', 'hubbed') // any command syncs
+  assert.match(onHub('rooms_hubbed_now-head.md'), /waiting: owner reply on X/)
+  assert.match(onHub('rooms_hubbed_now-head.md'), /resume: 2099/)
+  assert.match(onHub('rooms_hubbed_BRIEF.md'), /builder: standard/)
+  assert.match(onHub('rooms_hubbed_notes_builder.md'), /hello/)
+  assert.match(readdirSync(hub).filter(f => /items_T01/.test(f)).map(f => readFileSync(join(hub, f), 'utf8')).join(''), /works well/)
+  assert.equal(existsSync(join(base, 'rooms', 'hubbed')), false) // the folder is never created
+
+  // a change on the hub meanwhile stays; the same field changed on both sides: hub wins, the edit is kept aside
+  edit(hubFile('rooms_hubbed_now-head.md'), /phase:.*/, 'phase: from the hub')
+  edit(join(tree, 'now-head.md'), /waiting:.*/, 'waiting: mine')
+  edit(hubFile('rooms_hubbed_now-head.md'), /waiting:.*/, 'waiting: theirs')
+  const r = rooms('status', 'hubbed')
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stderr, /changed on the hub too/)
+  assert.match(onHub('rooms_hubbed_now-head.md'), /phase: from the hub/)
+  assert.match(onHub('rooms_hubbed_now-head.md'), /waiting: theirs/)
+  assert.match(readFileSync(join(tree, 'now-head.md.conflict'), 'utf8'), /waiting: mine/)
+  assert.match(readFileSync(join(tree, 'now-head.md'), 'utf8'), /waiting: theirs/)
+})

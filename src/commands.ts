@@ -10,7 +10,7 @@ import { claudeBin, claudeDir, config, legacyStateDir, roomsHome, scratchDir, st
 import { autocommit, commit, excludeLocal, git, pushInBackground, unwritable, withLock } from './git.ts'
 import { applyUserSandbox, planUserSandbox, sandboxGap } from './sandbox.ts'
 import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
-import { findWorkItem, publishWorking } from './working.ts'
+import { editDir, editPath, findWorkItem, publishWorking, syncIn, syncOut } from './working.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
 import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession, WORKER_DISALLOWED_TOOLS } from './sessions.ts'
@@ -292,7 +292,7 @@ function createRoom(a: Args): string {
   if (has(a, 'feature')) backend().write(join(r.dir, 'PRD.md'), readFileSync(join(ROOT, 'templates', 'prd.md'), 'utf8').replace('{title}', title).replace('{now}', now()))
   changed(r, 'new room')
   return [
-    `created ${r.dir}${lead ? ` · lead session ${lead}` : ' · no lead session: events run one-shot lead turns until one claims it (rooms lead)'}`,
+    `created ${editDir(r)}${lead ? ` · lead session ${lead}` : ' · no lead session: events run one-shot lead turns until one claims it (rooms lead)'}`,
     has(a, 'feature') ? `PRD.md drafted from the template. Building is locked until the owner agrees it (rooms prd ${name} review); research items (rooms add --research) may run before.` : '',
   ]
     .filter(Boolean)
@@ -327,7 +327,7 @@ function cmdAdd(a: Args): string {
     ['Result', 'Done:\nArtifacts:\nUnverified:\nNext:'],
   ])
   changed(r, `${id} added`)
-  return `${id}: ${rec.path}`
+  return `${id}: ${publishWorking(r, rec)}`
 }
 
 // Who gets a card: the owner sees one-way doors, premises, gates, todos and
@@ -389,7 +389,7 @@ function cmdAsk(a: Args): string {
   ], sections)
   changed(r, `${id} asked`)
   const where = !isHuman(decider) ? `team decision for ${decider} (not on the page)` : status === 'provisional' ? `goes ahead with ${def} at ${due} unless the owner stops it` : 'on the owner\'s page'
-  return `${id}: ${where} · ${rec.path}`
+  return `${id}: ${where} · ${editPath(r, rec.path)}`
 }
 
 function briefGaps(it: Record): string[] {
@@ -590,7 +590,7 @@ function cmdRf(a: Args): string {
       ['Sign-off', 'Lead:\nOwner:'],
     ])
     changed(r, `${id} drafted`)
-    return `${id}: ${rec.path}`
+    return `${id}: ${editPath(r, rec.path)}`
   }
   if (/^RF\d+$/.test(verb ?? '') && arg === 'review') {
     const rf = r.find(verb)
@@ -990,8 +990,29 @@ Setup and plumbing
 
 Set ROOMS_AS=<name> so Log lines carry it.`
 
+// Commands whose first argument is a room.
+const ROOM_FIRST = new Set(['new', 'add', 'ask', 'spawn', 'set', 'withdraw', 'log', 'need', 'done', 'answer', 'prd', 'rf', 'brief', 'status', 'pause', 'resume', 'close', 'prune', 'tell', 'lead', 'chat'])
+
+// In a routed room, take the working tree's edits to the hub before the command
+// and refresh the tree after it.
 export async function run(argv: string[]): Promise<{ text: string; code: number }> {
   await loadBackend()
+  const name = ROOM_FIRST.has(argv[0] ?? '') && /^[a-z0-9][a-z0-9-]*$/.test(argv[1] ?? '') ? argv[1] : undefined
+  if (!name || !isRouted(name)) return runCommand(argv)
+  const r = new Room(name)
+  if (argv[0] !== 'new' && r.exists()) syncIn(r)
+  try {
+    return await runCommand(argv)
+  } finally {
+    try {
+      if (r.exists()) syncOut(r)
+    } catch (e) {
+      process.stderr.write(`rooms: working copy of ${name} not refreshed: ${(e as Error).message}\n`)
+    }
+  }
+}
+
+async function runCommand(argv: string[]): Promise<{ text: string; code: number }> {
   if (argv[0] === 'hook' && routingActive()) watchdog(HUB_TIMEOUT_MS + 4000, 'the hook')
   const a = parseArgs(argv, BOOLEANS)
   const cmd = a._.shift() ?? 'help'
@@ -1031,7 +1052,11 @@ export async function run(argv: string[]): Promise<{ text: string; code: number 
     case 'rf':
       return ok(cmdRf(a))
     case 'brief':
-      return ok(cmdBinding(room(a._[0])) || `${a._[0]} has no PRD`)
+    {
+      const r = room(a._[0])
+      const text = cmdBinding(r) || `${a._[0]} has no PRD`
+      return ok(isRouted(r.name) ? `${text}\n\n(on the hub: working copy of the room's files in ${editDir(r)})` : text)
+    }
     case 'statusline': {
       if (a._[0]) return ok(roomStatusLine(room(a._[0])))
       let session = flag(a, 'session')

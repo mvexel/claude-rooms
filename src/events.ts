@@ -6,6 +6,7 @@ import { backend, sendReceiptToHub } from './backend.ts'
 import { LEASE_FRESH_MS, claudeBin, config, roomsHome, stateDir } from './config.ts'
 import { withLock } from './git.ts'
 import { Room } from './room.ts'
+import { editDir } from './working.ts'
 import { findSession, isEnded, isRunning, liveness, listSessions, resumeStopped } from './sessions.ts'
 
 // Events: everything the lead must hear (a tap, a worker done, a need) is
@@ -171,7 +172,7 @@ function startTurn(room: Room, evs: Event[]): void {
   const c = config()
   const prompt = [
     `You are the lead of room ${room.name} for one turn. Load the rooms:lead skill.`,
-    `Room record: ${room.dir}. Start with: rooms status ${room.name}`,
+    `Room record: ${editDir(room)}. Start with: rooms status ${room.name}`,
     render(room.name, evs),
     'Handle these events: take the next step (dispatch, decide, or ask the owner), keep the record current, then end your turn. Do not wait for workers; their results come back as new events.',
   ].join('\n\n')
