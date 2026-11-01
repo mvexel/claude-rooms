@@ -688,3 +688,14 @@ n=$(( $(wc -l < ${log}) + 1 )); echo aaaaaa$n >> ${log}; echo "backgrounded · a
   const bad = run({ hallMonitor: { maxThreads: 0 } }, 'status', 'r')
   assert.match(bad.out, /clone for/)
 })
+
+test('events: a worker delivery is framed as a request to act, not an event feed (T33)', async () => {
+  const { render } = await import('../src/events.ts')
+  const ev = { id: 'e1', at: '2026-11-01T18:47:00Z', text: 'From lead: please re-check' } as any
+  const w = render('r/T31', [ev])
+  assert.match(w, /Message for you on T31 in room r/)
+  assert.match(w, /act on it now/)
+  assert.match(w, /From lead: please re-check/)
+  assert.match(render('r', [ev]), /1 new event in room r/)
+  assert.match(render('session abc', [ev]), /1 new event/)
+})
