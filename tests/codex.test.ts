@@ -313,3 +313,25 @@ test('a resumed turn on a done item still has its scratch folder; it goes after 
   assert.ok(existsSync(scratch), 'scratch recreated for the resumed turn')
   await s.wait(() => s.run().state === 'idle' && !existsSync(scratch))
 })
+
+test('a tell that sees a live lock holder is spooled first, so the exiting runner or the next tell still delivers it', async () => {
+  const s = sandbox()
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'idle')
+  const { spawn } = await import('node:child_process')
+  const holder = spawn('sleep', ['30'])
+  const lock = join(s.env.CLAUDE_ROOMS_STATE!, 'runs', 'r', 'T01.lock')
+  writeFileSync(lock, String(holder.pid))
+  assert.match(s.ok('tell', 'r', 'while locked', '--item', 'T01'), /queued/)
+  const spool = join(s.env.CLAUDE_ROOMS_STATE!, 'runs', 'r', 'T01.q')
+  assert.equal(readdirSync(spool).filter(f => f.endsWith('.json')).length, 1) // on disk before the holder looks
+  assert.equal(promptLines(s).length, 0)
+  // the holder (a runner) goes away without having seen it: the next tell must deliver both, in order
+  holder.kill('SIGKILL')
+  await new Promise(r => holder.on('close', r))
+  s.ok('tell', 'r', 'after', '--item', 'T01')
+  await s.wait(() => promptLines(s).length === 1 && s.run().state === 'idle')
+  const p = promptLines(s)[0]
+  assert.ok(p.indexOf('while locked') >= 0 && p.indexOf('while locked') < p.indexOf('after'), p)
+  assert.equal(readdirSync(spool).length, 0)
+})

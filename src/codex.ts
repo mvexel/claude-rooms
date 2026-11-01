@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { codexBin, config, roomsHome, stateDir } from './config.ts'
@@ -172,40 +172,51 @@ export function launchCodex(room: string, id: string): void {
 }
 
 // ---- queued follow-ups ------------------------------------------------------
-// rooms tell --item appends to STATE/runs/<room>/<Tnn>.queue (one JSON line per
-// message, O_APPEND). The runner takes the whole queue by renaming it, so a
-// message is delivered by exactly one turn; the lock keeps one run per item.
+// rooms tell --item spools to STATE/runs/<room>/<Tnn>.q/ (one file per message, tmp+rename).
+// The runner claims each message by rename; the lock keeps one run per item and a message is delivered by exactly one turn.
 
-const queueFile = (room: string, id: string) => `${runBase(room, id)}.queue`
+// The queue is a spool directory, one file per message. A tell writes a dotfile
+// and renames it into place, so a message is either wholly there or not at all;
+// the runner claims each message by renaming it into its own taking dir, so a
+// write can never land in a file that was already taken.
+const spoolDir = (room: string, id: string) => `${runBase(room, id)}.q`
+const msgFiles = (dir: string): string[] => { try { return readdirSync(dir).filter(f => f.endsWith('.json')).sort() } catch { return [] } }
 
-function takeQueue(room: string, id: string): { lines: string[]; texts: string[] } {
-  const taken = `${queueFile(room, id)}.${process.pid}.taking`
-  try { renameSync(queueFile(room, id), taken) } catch { return { lines: [], texts: [] } }
-  const lines: string[] = []
-  const texts: string[] = []
-  for (const l of readFileSync(taken, 'utf8').split('\n')) {
-    if (!l.trim()) continue
-    try { texts.push(JSON.parse(l).text); lines.push(l) } catch {}
+type Taken = { name: string; text: string }
+
+function enqueue(room: string, id: string, text: string): void {
+  const dir = spoolDir(room, id)
+  mkdirSync(dir, { recursive: true })
+  const name = `${Date.now().toString().padStart(14, '0')}-${process.pid}-${Math.random().toString(36).slice(2, 8)}.json`
+  writeFileSync(join(dir, `.${name}.tmp`), JSON.stringify({ at: new Date().toISOString(), text }))
+  renameSync(join(dir, `.${name}.tmp`), join(dir, name))
+}
+
+function takeDir(room: string, id: string): string { return `${spoolDir(room, id)}.taking.${process.pid}` }
+
+function takeQueue(room: string, id: string): Taken[] {
+  const dir = spoolDir(room, id)
+  const mine = takeDir(room, id)
+  const out: Taken[] = []
+  for (const name of msgFiles(dir)) {
+    mkdirSync(mine, { recursive: true })
+    try { renameSync(join(dir, name), join(mine, name)) } catch { continue } // another runner claimed it
+    try { out.push({ name, text: JSON.parse(readFileSync(join(mine, name), 'utf8')).text }) } catch {}
   }
-  try { unlinkSync(taken) } catch {}
-  return { lines, texts }
+  return out
 }
 
-// Put taken messages back at the head of the queue (a resume that failed before
-// its turn started did not deliver them). Appends racing this very rename can
-// land ahead of them; none are lost.
-function requeueHead(room: string, id: string, lines: string[]): void {
-  const q = queueFile(room, id)
-  const tmp = `${q}.${process.pid}.requeue`
-  let rest = ''
-  try { rest = readFileSync(q, 'utf8') } catch {}
-  writeFileSync(tmp, lines.map(l => l + '\n').join('') + rest)
-  renameSync(tmp, q)
+// Delivered: forget the claimed messages.
+function settle(room: string, id: string): void { try { rmSync(takeDir(room, id), { recursive: true, force: true }) } catch {} }
+
+// A resume that failed before its turn started delivered nothing: the messages
+// go back under their old names, so they stay ahead of anything newer.
+function requeueHead(room: string, id: string, taken: Taken[]): void {
+  for (const t of taken) try { renameSync(join(takeDir(room, id), t.name), join(spoolDir(room, id), t.name)) } catch {}
+  settle(room, id)
 }
 
-function queued(room: string, id: string): boolean {
-  try { return readFileSync(queueFile(room, id), 'utf8').trim().length > 0 } catch { return false }
-}
+function queued(room: string, id: string): boolean { return msgFiles(spoolDir(room, id)).length > 0 }
 
 export function followUpPrompt(msgs: string[]): string {
   return msgs.length === 1 ? msgs[0] : msgs.map((m, i) => `Message ${i + 1}:\n${m}`).join('\n\n')
@@ -214,29 +225,28 @@ export function followUpPrompt(msgs: string[]): string {
 // Deliver a message to a Codex worker: persist it, and if no run is going,
 // resume the same thread by id to take it. Returns the line for the caller.
 export function codexTell(room: string, id: string, text: string): string {
+  const first = codexLiveness(room, id)
+  if (first.live === 'unknown') return 'held: no run record on this host (liveness unknown); not starting a run'
+  if (first.live === 'dead' && !first.run?.threadId) return 'held: the Codex run has no session to resume (it never started a thread); respawn with --backend codex'
+  // Append FIRST, then look: a runner re-checks the queue after it unlocks, so either it sees
+  // this message or we see no lock holder and start one. Looking first could strand it.
+  enqueue(room, id, text)
+  const holder = lockHolder(room, id)
   const lv = codexLiveness(room, id)
   const { state, run } = lv
-  // A runner still holding the lock is a live worker, even between a turn's end and its unlock.
-  const holder = lockHolder(room, id)
-  const live = holder && pidLiveness(holder) !== 'dead' ? 'alive' : lv.live
-  if (live === 'unknown') return 'held: no run record on this host (liveness unknown); not starting a run'
-  if (live === 'dead' && !run?.threadId) return 'held: the Codex run has no session to resume (it never started a thread); respawn with --backend codex'
-  mkdirSync(dirname(queueFile(room, id)), { recursive: true })
-  writeFileSync(queueFile(room, id), JSON.stringify({ at: new Date().toISOString(), text }) + '\n', { flag: 'a' })
-  if (live !== 'dead') return 'queued: the running Codex worker gets it in its next turn'
+  if ((holder && pidLiveness(holder) !== 'dead') || lv.live !== 'dead' || !run) return 'queued: the running Codex worker gets it in its next turn'
+  if (!run.threadId) return 'held: the Codex run has no session to resume (it never started a thread); respawn with --backend codex'
   // Not running: mark the run as starting so liveness and status see it, then launch a runner.
   // Two tells at once both launch; the lock lets one runner drain both messages.
-  {
-    run!.prev = state === 'idle' ? 'idle' : 'failed'
-    run!.state = 'starting'
-    run!.resume = true
-    run!.startedAt = new Date().toISOString()
-    run!.pid = undefined
-    run!.codexPid = undefined
-    run!.notified = false
-    run!.error = undefined
-    writeRun(room, id, run!)
-  }
+  run.prev = state === 'idle' ? 'idle' : 'failed'
+  run.state = 'starting'
+  run.resume = true
+  run.startedAt = new Date().toISOString()
+  run.pid = undefined
+  run.codexPid = undefined
+  run.notified = false
+  run.error = undefined
+  writeRun(room, id, run)
   launchCodex(room, id)
   return 'the Codex worker is resumed with it (same session)'
 }
@@ -270,13 +280,14 @@ export async function runCodex(room: string, id: string): Promise<void> {
 
 // O_EXCL, also for taking over a dead holder's lock: of two runners finding a stale lock, one wins.
 function acquireLock(room: string, id: string): boolean {
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 5; i++) {
     try {
       writeFileSync(lockFile(room, id), String(process.pid), { flag: 'wx' })
       return true
     } catch {
       const holder = lockHolder(room, id)
-      if (holder && pidLiveness(holder) !== 'dead') return false
+      if (holder === undefined) continue // vanished or being written: just retry the exclusive create
+      if (pidLiveness(holder) !== 'dead') return false
       try { unlinkSync(lockFile(room, id)) } catch {}
     }
   }
@@ -290,18 +301,18 @@ async function drain(room: string, id: string, setPid: (p?: number) => void, isT
     const run = readRun(room, id)!
     const spec = run.spec
     let args: string[]
-    let taken = { lines: [] as string[], texts: [] as string[] }
+    let taken: Taken[] = []
     if (first && run.state === 'starting' && !run.resume) {
       args = codexArgs(spec, readFileSync(`${runBase(room, id)}.prompt`, 'utf8'))
     } else {
       if (!run.threadId) return false
+      if (run.state === 'failed') return false
       taken = takeQueue(room, id)
-      const msgs = taken.texts
+      const msgs = taken.map(t => t.text)
       if (!msgs.length) {
         if (run.state === 'starting') { run.state = run.prev ?? 'idle'; run.resume = false; writeRun(room, id, run) } // another runner took it
         return false
       }
-      if (run.state === 'failed' && !first) return false
       args = resumeArgs(spec, run.threadId, followUpPrompt(msgs))
     }
     first = false
@@ -314,7 +325,8 @@ async function drain(room: string, id: string, setPid: (p?: number) => void, isT
     writeRun(room, id, run)
     const { ok, started } = await turn(room, id, run, args, setPid, isTerminated)
     // A resume that never started its turn delivered nothing: the messages go back, first in line.
-    if (!ok && !started && taken.lines.length) requeueHead(room, id, taken.lines)
+    if (!ok && !started && taken.length) requeueHead(room, id, taken)
+    else settle(room, id)
     if (!ok || isTerminated()) return false
     if (!queued(room, id)) return false
   }
