@@ -1,5 +1,6 @@
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
+import { workerOf } from './workers.ts'
 import { type Session, findSession, isEnded, isRunning, listSessions, liveness } from './sessions.ts'
 import { isRouted } from './backend.ts'
 import { leaseFresh, pending, turnRunning } from './events.ts'
@@ -128,10 +129,20 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
     const st = it.get('state')
     if (!OPEN_ITEM.has(st)) continue
     if (st === 'doing') {
-      const s = it.get('agent') ? findSession(it.get('agent'), sessions) : undefined
       const agent = it.get('agent')
-      const alive = !!agent && isRunning(s ?? agent, sessions)
-      if (alive && s?.status === 'waiting') {
+      const w = workerOf(room.name, it, sessions)
+      const s = w.session
+      const alive = !!agent && w.live === 'alive'
+      if (w.backend === 'codex') {
+        if (alive) moving.push(id)
+        else if (w.live === 'unknown') {
+          unknownLive.push(id)
+          warnings.push(`${id} doing, Codex worker state unknown (no run record on this host); not treating it as ended`)
+        } else {
+          finishedQuiet.push(id)
+          warnings.push(`${id} doing, but its Codex run ${w.word}: read its Log, then rooms tell ${room.name} --item ${id} or respawn`)
+        }
+      } else if (alive && s?.status === 'waiting') {
         const why = `${id} worker is waiting for input in session ${s.id}`
         waitingInput.push(why)
         warnings.push(`${why}${s.waitingFor ? ` (${s.waitingFor})` : ''}: open the session and answer it`)
@@ -139,7 +150,7 @@ export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Ses
       else if (alive) {
         finishedQuiet.push(id)
         warnings.push(`${id} doing, but its worker is idle: read its result or tell it what is missing`)
-      } else if (agent && !isEnded(s ?? agent, sessions)) {
+      } else if (agent && w.live !== 'dead') {
         unknownLive.push(id)
         warnings.push(`${id} doing, worker liveness unknown (sessions hidden from this process, e.g. by a sandbox); not treating it as ended`)
       } else if (it.get('agent')) {

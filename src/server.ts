@@ -12,6 +12,7 @@ import { identity } from './identity.ts'
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
 import { stepParts } from './steps.ts'
+import { codexLiveness, codexStatusWord } from './codex.ts'
 import { type Session, findSession, isEnded, isRunning, listSessions } from './sessions.ts'
 import { cardRank, doingSince, isHuman, roomState, tryRoomState, type RoomState, waves } from './state.ts'
 import { closeRoom, setPaused, setTitle, sweep } from './commands.ts'
@@ -203,7 +204,7 @@ export function roomDetail(room: Room, st: RoomState, sessions: Session[]) {
           const session = findSession(i.get('agent'), sessions)
           return { ...item(room, i), state: i.get('state'), tier: i.get('tier') || undefined,
             session: session?.id ?? (i.get('agent') ? i.get('agent').slice(0, 8) : undefined),
-            session_state: isRunning(session ?? i.get('agent'), sessions) ? (session?.status === 'idle' ? 'idle' : session?.status === 'waiting' ? 'waiting for input' : 'working') : i.get('agent') ? (isEnded(session ?? i.get('agent'), sessions) ? 'finished' : 'working') : undefined }
+            session_state: i.get('backend') === 'codex' ? codexStatusWord(room.name, i.get('id')) : isRunning(session ?? i.get('agent'), sessions) ? (session?.status === 'idle' ? 'idle' : session?.status === 'waiting' ? 'waiting for input' : 'working') : i.get('agent') ? (isEnded(session ?? i.get('agent'), sessions) ? 'finished' : 'working') : undefined }
         }),
     })),
     plan: {
@@ -251,7 +252,9 @@ export function agentDetail(room: Room, ref: string, sessions: Session[]) {
   const role = isLead ? 'lead' : mine.map(i => i.get('owner')).find(Boolean) || undefined
   const stamps = [...mine.map(i => Date.parse(i.get('updated'))), ...(isLead ? [Date.parse(room.head.get('updated'))] : [])].filter(Number.isFinite)
   const started = session?.startedAt ?? (stamps.length ? Math.min(...stamps) : undefined)
-  const running = isRunning(session ?? full, sessions), ended = isEnded(session ?? full, sessions)
+  const codexItem = mine.find(i => i.get('backend') === 'codex')
+  const cl = codexItem ? codexLiveness(room.name, codexItem.get('id')) : undefined
+  const running = cl ? cl.live === 'alive' : isRunning(session ?? full, sessions), ended = cl ? cl.live === 'dead' : isEnded(session ?? full, sessions)
   return {
     room: room.name,
     session: full,
