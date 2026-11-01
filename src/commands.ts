@@ -3,7 +3,8 @@ import { type Dirent, appendFileSync, cpSync, existsSync, mkdirSync, readFileSyn
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { backend, loadBackend } from './backend.ts'
+import { HUB_TIMEOUT_MS, backend, loadBackend } from './backend.ts'
+import { watchdog } from './watchdog.ts'
 import { applyDueDefaults, recordAnswer } from './answer.ts'
 import { claudeBin, claudeDir, config, legacyStateDir, roomsHome, scratchDir, stateDir } from './config.ts'
 import { autocommit, commit, excludeLocal, git, pushInBackground, unwritable, withLock } from './git.ts'
@@ -967,6 +968,7 @@ Setup and plumbing
 Set ROOMS_AS=<name> so Log lines carry it.`
 
 export async function run(argv: string[]): Promise<{ text: string; code: number }> {
+  if (argv[0] === 'hook') watchdog(HUB_TIMEOUT_MS + 4000, 'the hook')
   await loadBackend()
   const a = parseArgs(argv, BOOLEANS)
   const cmd = a._.shift() ?? 'help'

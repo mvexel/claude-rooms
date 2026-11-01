@@ -181,7 +181,7 @@ test('STATE/backend.json routes the listed rooms for the CLI; the env var wins; 
   ok('new', 'hubbed', 'Hubbed', '--session', 'l2', '--repo', repo('r2'))
   ok('add', 'mine', 'local thing')
   const calls = readFileSync(log, 'utf8')
-  assert.match(calls, /^settings \{"hub":"https:\/\/hub\.example"\}$/m)
+  assert.match(calls, /^settings \{"timeoutMs":8000,"hub":"https:\/\/hub\.example"\}$/m)
   assert.match(calls, /^write .*hubbed\/BRIEF\.md$/m)
   assert.doesNotMatch(calls, /mine\//)
   // both rooms are seen
@@ -200,4 +200,115 @@ test('STATE/backend.json routes the listed rooms for the CLI; the env var wins; 
   writeFileSync(log, '')
   ok('add', 'hubbed', 'now local')
   assert.equal(readFileSync(log, 'utf8'), '')
+})
+
+test('with the default nesting (state inside the rooms home) a routed room inbox and lease go to the module', () => {
+  const remote = memory()
+  const local = memory()
+  const home = '/r/rooms'
+  process.env.CLAUDE_ROOMS_HOME = home
+  delete process.env.CLAUDE_ROOMS_STATE // default: /r/rooms/.state
+  try {
+    const b = routed(local, remote, ['hub'])
+    b.append(`${home}/.state/rooms/hub/inbox.jsonl`, 'x\n')
+    b.write(`${home}/.state/rooms/hub/lease.json`, '{}')
+    b.write(`${home}/.state/rooms/hub/T01/lease.json`, '{}')
+    b.append(`${home}/.state/rooms/mine/inbox.jsonl`, 'y\n')
+    assert.deepEqual([...remote.files.keys()].sort(), [`${home}/.state/rooms/hub/T01/lease.json`, `${home}/.state/rooms/hub/inbox.jsonl`, `${home}/.state/rooms/hub/lease.json`])
+    assert.deepEqual([...local.files.keys()], [`${home}/.state/rooms/mine/inbox.jsonl`])
+  } finally {
+    delete process.env.CLAUDE_ROOMS_HOME
+  }
+})
+
+test('a routed room receipts also reach the module; a local room receipts do not', () => {
+  const remote = memory()
+  const local = memory()
+  const home = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'rooms-receipts-'))
+  process.env.CLAUDE_ROOMS_HOME = join(home, 'rooms') // state defaults inside it
+  useBackend(routed(local, remote, ['hub']))
+  try {
+    const a = emit('hub', 'hello', { dispatch: false })
+    const b = emit('mine', 'local', { dispatch: false })
+    take('hub')
+    take('mine')
+    const receiptsKey = [...remote.files.keys()].find(k => k.endsWith('receipts.json'))!
+    assert.ok(receiptsKey, 'module got a receipts write')
+    const got = JSON.parse(remote.files.get(receiptsKey)!)
+    assert.equal(got[a].delivery, 'lead_read')
+    assert.equal(got[b], undefined)
+    // local receipts are unchanged: both ids are there
+    const mine = JSON.parse(local.files.get(receiptsKey)!)
+    assert.equal(mine[a].delivery, 'lead_read')
+    assert.equal(mine[b].delivery, 'lead_read')
+    // the inboxes went where their rooms live
+    assert.ok([...remote.files.keys()].every(k => !k.includes('/mine/')))
+  } finally {
+    useBackend(localBackend)
+    delete process.env.CLAUDE_ROOMS_HOME
+  }
+})
+
+test('a module that fails never loses the local receipt', () => {
+  const local = memory()
+  const remote = { ...memory(), write() { throw new Error('hub down') } } as Backend
+  const home = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'rooms-receipts-'))
+  process.env.CLAUDE_ROOMS_HOME = join(home, 'rooms')
+  useBackend(routed(local, remote, ['other']))
+  try {
+    const id = emit('other', 'x', { dispatch: false }) // the hub write of the receipt throws, emit does not
+    const key = [...local.files.keys()].find(k => k.endsWith('receipts.json'))!
+    assert.equal(JSON.parse(local.files.get(key)!)[id].delivery, 'saved')
+  } finally {
+    useBackend(localBackend)
+    delete process.env.CLAUDE_ROOMS_HOME
+  }
+})
+
+test('a broken routing setup fails only the routed rooms; local rooms and hooks keep working', () => {
+  const base = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'rooms-broken-'))
+  const state = join(base, 'rooms', '.state') // default nesting
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CLAUDE_ROOMS_HOME: join(base, 'rooms'),
+    CLAUDE_ROOMS_CONFIG: join(base, 'none.json'),
+    CLAUDE_ROOMS_CLAUDE: '/bin/false',
+    GIT_AUTHOR_NAME: 't',
+    GIT_AUTHOR_EMAIL: 't@example.invalid',
+    GIT_COMMITTER_NAME: 't',
+    GIT_COMMITTER_EMAIL: 't@example.invalid',
+  }
+  delete env.CLAUDE_ROOMS_BACKEND
+  delete env.CLAUDE_ROOMS_STATE
+  const rooms = (...args: string[]) => spawnSync(process.execPath, ['--no-warnings', CLI, ...args], { env, encoding: 'utf8' })
+  const repo = (name: string) => {
+    const dir = join(base, name)
+    mkdirSync(dir)
+    spawnSync('git', ['init', '-q', dir])
+    return dir
+  }
+  const module = resolve(import.meta.dirname, 'support', 'logging-backend.ts')
+  const routing = (text: string) => writeFileSync(join(state, 'backend.json'), text)
+  assert.equal(rooms('init').status, 0)
+  assert.equal(rooms('new', 'mine', 'Mine', '--session', 'l1', '--repo', repo('r1')).status, 0)
+  const check = (label: string) => {
+    const add = rooms('add', 'mine', 'local thing ' + label)
+    assert.equal(add.status, 0, `${label}: ${add.stderr}`)
+    assert.equal(rooms('status').status, 0, label)
+    assert.equal(rooms('hook', 'poll', '--session', 'x').status, 0, label)
+    const tell = rooms('tell', 'hubbed', 'hi')
+    assert.notEqual(tell.status, 0, label)
+  }
+  // a good file once, so the room names are known; then each way to break it
+  writeFileSync(join(base, 'calls.log'), '')
+  env.BACKEND_LOG = join(base, 'calls.log')
+  routing(JSON.stringify({ module, rooms: ['hubbed'] }))
+  assert.equal(rooms('status').status, 0)
+  routing(JSON.stringify({ module: '/nope/x.ts', rooms: ['hubbed'] }))
+  check('bad module path')
+  assert.match(rooms('tell', 'hubbed', 'hi').stderr, /hubbed.*(hub backend|failed)/s)
+  routing('{ truncated')
+  check('bad json')
+  routing(JSON.stringify({ module, rooms: 'nope' }))
+  check('bad shape')
 })
