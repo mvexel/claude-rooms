@@ -1,19 +1,20 @@
-# claude-rooms on Komodo. The host home is bind-mounted at the same path so
-# ~/rooms, ~/.claude, repos and worktrees keep their paths. node, claude and
-# rooms come from that home, not from the image.
+# claude-rooms on a single host, in a container. The host home is bind-mounted
+# at the same path so ~/rooms, ~/.claude, repos and worktrees keep their paths.
+# node, claude and rooms come from that home, not from the image.
+# ROOMS_HOME defaults to $HOME; set it in the environment if the home differs.
 services:
   rooms:
     build: .
     image: claude-rooms
     # Local image, never in a registry: build it on deploy instead of pulling.
-    # Without this, Komodo's `docker compose pull` fails with "pull access
-    # denied for claude-rooms".
+    # Without this, `docker compose pull` fails with "pull access denied for
+    # claude-rooms".
     pull_policy: build
     init: true
     restart: unless-stopped
     # Caps for the container. The host's user-<uid>.slice limits do not apply
-    # to Docker containers, so the cap has to be set here. Defaults fit lima
-    # (16 GB, 8 vCPU) shared with the public sites.
+    # to Docker containers, so the cap has to be set here. Defaults assume a
+    # host with about 16 GB and 8 vCPU; lower them for a smaller machine.
     mem_limit: ${ROOMS_MEM_LIMIT:-8g}
     cpus: ${ROOMS_CPUS:-4}
     # Host network: rooms serve stays on 127.0.0.1, and `tailscale serve` on the
@@ -23,11 +24,11 @@ services:
     # accepts every write, and tailscale serve would expose that.
     network_mode: host
     user: "${ROOMS_UID:-1000}:${ROOMS_GID:-1000}"
-    working_dir: ${ROOMS_HOME:-/home/mvexel}
+    working_dir: ${ROOMS_HOME:-${HOME}}
     environment:
-      HOME: ${ROOMS_HOME:-/home/mvexel}
-      PATH: ${ROOMS_HOME:-/home/mvexel}/.local/node/bin:${ROOMS_HOME:-/home/mvexel}/.local/bin:/usr/local/bin:/usr/bin:/bin
+      HOME: ${ROOMS_HOME:-${HOME}}
+      PATH: ${ROOMS_HOME:-${HOME}}/.local/node/bin:${ROOMS_HOME:-${HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin
       ROOMS_USERS: ${ROOMS_USERS:?set ROOMS_USERS to the tailnet login(s) allowed to answer}
     volumes:
-      - ${ROOMS_HOME:-/home/mvexel}:${ROOMS_HOME:-/home/mvexel}
+      - ${ROOMS_HOME:-${HOME}}:${ROOMS_HOME:-${HOME}}
     command: ["rooms", "serve", "--port", "${ROOMS_PORT:-8788}", "--host", "127.0.0.1"]
