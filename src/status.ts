@@ -1,3 +1,5 @@
+import { isRouted } from './backend.ts'
+import { editDir } from './working.ts'
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
 import { type RoomState, isHuman, waves, readyUnstaffed, openCards } from './state.ts'
@@ -29,6 +31,7 @@ export function statusText(room: Room, st: RoomState, brief = false): string {
     out.push(`PRD ${prd.get('status')}${rfs.length ? ` + ${rfs.join(', ')}` : ''}${room.buildLocked() ? ' · building locked (research items only)' : ''}`)
   }
   if (head.get('phase')) out.push(`phase: ${head.get('phase')}`)
+  if (isRouted(room.name)) out.push(`on the hub: edit BRIEF.md, now-head.md, notes/ and decisions/ in ${editDir(room)}; any rooms command takes the edits to the hub`)
   const evs = pending(room.name)
   if (evs.length) out.push(`${evs.length} undelivered event(s) for the lead`)
   out.push(rule)

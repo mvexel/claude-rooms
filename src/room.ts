@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { backend } from './backend.ts'
+import { backend, isRouted } from './backend.ts'
 import { roomsHome } from './config.ts'
 import { Record, hhmm, now, slug } from './record.ts'
 
@@ -30,7 +30,17 @@ export class Room {
   static all(): Room[] {
     return backend()
       .list(roomsHome())
-      .filter(d => d.dir && backend().exists(join(roomsHome(), d.name, 'BRIEF.md')))
+      .filter(d => {
+        if (!d.dir) return false
+        try {
+          return backend().exists(join(roomsHome(), d.name, 'BRIEF.md'))
+        } catch (e) {
+          // A room on the hub that can't be asked (hub down) stays listed, so
+          // overviews can say it is unreachable; the local rooms are unaffected.
+          if (isRouted(d.name)) return true
+          throw e
+        }
+      })
       .map(d => new Room(d.name))
   }
 

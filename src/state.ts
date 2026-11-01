@@ -1,6 +1,7 @@
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
 import { type Session, findSession, isEnded, isRunning, listSessions, liveness } from './sessions.ts'
+import { isRouted } from './backend.ts'
 import { leaseFresh, pending, turnRunning } from './events.ts'
 
 // One status per room, decided here and nowhere else. For the owner it is a
@@ -97,6 +98,17 @@ function age(stamp: string): string {
   const m = Math.round((Date.now() - Date.parse(stamp)) / 60_000)
   if (!Number.isFinite(m)) return ''
   return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)} days`
+}
+
+// roomState for an overview of many rooms: a room on the hub that cannot be
+// read (the hub is down) is reported, not thrown, so local rooms still show.
+export function tryRoomState(room: Room, opts: { yielding?: boolean; sessions?: Session[] } = {}): { st: RoomState } | { error: string } {
+  try {
+    return { st: roomState(room, opts) }
+  } catch (e) {
+    if (!isRouted(room.name)) throw e
+    return { error: (e as Error).message }
+  }
 }
 
 export function roomState(room: Room, opts: { yielding?: boolean; sessions?: Session[] } = {}): RoomState {

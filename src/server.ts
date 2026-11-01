@@ -10,7 +10,7 @@ import { emit, receipts } from './events.ts'
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
 import { type Session, findSession, isEnded, isRunning, listSessions } from './sessions.ts'
-import { cardRank, doingSince, isHuman, roomState, type RoomState, waves } from './state.ts'
+import { cardRank, doingSince, isHuman, roomState, tryRoomState, type RoomState, waves } from './state.ts'
 import { closeRoom, setPaused, setTitle, sweep } from './commands.ts'
 
 // The owner's page and its API (shapes in docs/ui.md, from the UX spec §8).
@@ -303,7 +303,14 @@ export async function serve(o: ServeOptions): Promise<void> {
 
   const states = () => {
     const s = fresh()
-    return Room.all().map(r => ({ room: r, st: roomState(r, { sessions: s }) }))
+    const ok: { room: Room; st: RoomState }[] = []
+    const down: { name: string; error: string }[] = []
+    for (const r of Room.all()) {
+      const t = tryRoomState(r, { sessions: s })
+      if ('st' in t) ok.push({ room: r, st: t.st })
+      else down.push({ name: r.name, error: t.error })
+    }
+    return { ok, down }
   }
 
   const server = createServer(async (req, res) => {
@@ -322,7 +329,7 @@ export async function serve(o: ServeOptions): Promise<void> {
           return res.end(readFileSync(join(ROOT, 'web', path)))
         }
         if (path === '/api/inbox') {
-          const all = states()
+          const all = states().ok
           const cards: ReturnType<typeof card>[] = []
           const going: ReturnType<typeof card>[] = []
           const waiting: { room: string; id: string; title: string; asked_at: string; who: string; text: string }[] = []
@@ -342,7 +349,7 @@ export async function serve(o: ServeOptions): Promise<void> {
           going.sort((a, b) => (a.due_at ?? '').localeCompare(b.due_at ?? ''))
           return send(req, res, 200, { now: new Date().toISOString(), count: cards.length, pulse, alarms, cards, going_ahead: going, waiting_on_team: waiting })
         }
-        if (path === '/api/rooms') return send(req, res, 200, { rooms_home: roomsHome(), rooms: states().map(({ room, st }) => summary(room, st)) })
+        if (path === '/api/rooms') { const s = states(); return send(req, res, 200, { rooms_home: roomsHome(), rooms: [...s.ok.map(({ room, st }) => summary(room, st)), ...s.down.map(d => ({ name: d.name, title: d.name, status: 'unreachable', sentence: `On the hub, which is unreachable: ${d.error}`, cards: 0 }))] }) }
         if (parts[0] === 'api' && parts[1] === 'rooms' && parts[2]) {
           const room = new Room(parts[2]).must()
           return send(req, res, 200, roomDetail(room, roomState(room, { sessions: fresh() }), fresh()))
