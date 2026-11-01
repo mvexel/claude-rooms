@@ -1034,7 +1034,7 @@ addEventListener("pagehide", () => {
   for (const [k, r] of Object.entries(ui.receipts)) {
     if (r.phase !== "undo" || !ui.pending[k]) continue;
     clearTimeout(ui.pending[k]);
-    navigator.sendBeacon?.(api(`cards/${encodeURIComponent(r.room)}/${encodeURIComponent(r.id)}/answer`), new Blob([JSON.stringify(r.body)], { type: "text/plain" }));
+    navigator.sendBeacon?.(api(`cards/${encodeURIComponent(r.room)}/${encodeURIComponent(r.id)}/answer`), new Blob([JSON.stringify(r.body)], { type: "application/json" }));
   }
 });
 // countdowns and ages tick without a refetch
