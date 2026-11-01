@@ -285,6 +285,10 @@ dialog::backdrop { background:rgba(0,0,0,.4); }
   .room-work { grid-area:1 / 1 / 2 / 3; }
   .room-team { grid-area:1 / 3; }
   .room-grid > .plan { grid-area:2 / 1 / 3 / -1; }
+  .avatar { display:inline-block; vertical-align:middle; flex:none; }
+  .avatar svg { display:block; }
+  a.agent { display:inline-flex; align-items:center; gap:6px; color:inherit; text-decoration:underline; margin-right:8px; }
+  .agent-head { display:flex; gap:14px; align-items:center; margin:12px 0; }
   .room-lead { grid-area:3 / 1 / 4 / 3; }
   .room-dec { grid-area:3 / 3; }
   .plan-scroll { display:block; max-height:calc(100vh - var(--tab-h) - 140px); min-height:240px; }
@@ -330,6 +334,13 @@ function h(tag, a = {}, ...kids) {
   for (const c of kids.flat(Infinity)) if (c != null && c !== false) n.append(c.nodeType ? c : document.createTextNode(String(c)));
   return n;
 }
+// Server-made inline SVG (src/identity.ts); the name is the same wherever the agent shows.
+function avatar(a, px = 24) {
+  const n = h("span", { class: "avatar", "aria-hidden": "true", style: `width:${px}px;height:${px}px` });
+  if (a?.svg) n.innerHTML = a.svg.replace(/width="32" height="32"/, 'width="100%" height="100%"').replace(/ role="img" aria-label="[^"]*"/, "");
+  return n;
+}
+const agentLink = (room, a, px = 20) => a ? h("a", { class: "agent", href: `#/agent/${encodeURIComponent(room)}/${encodeURIComponent(a.session)}` }, avatar(a, px), h("span", {}, a.name)) : null;
 function load(k, d) { try { return JSON.parse(localStorage.getItem("rooms:" + k)) ?? d; } catch { return d; } }
 function save(k, v) { try { localStorage.setItem("rooms:" + k, JSON.stringify(v)); } catch {} }
 const ago = m => m == null ? "" : m < 1 ? "just now" : m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.round(m / 1440)}d`;
@@ -396,6 +407,7 @@ document.addEventListener("focusout", () => setTimeout(() => { if (dirty) { dirt
 const routes = () => (location.hash.slice(1) || "/").split("/").filter(Boolean).map(decodeURIComponent);
 addEventListener("hashchange", async () => {
   const [a, b, c] = routes();
+  if (a === "agent" && b && c) { try { S.agent = await getJSON(`rooms/${encodeURIComponent(b)}/agents/${encodeURIComponent(c)}`); } catch (e) { S.agent = { error: e.message }; } }
   if (a === "room" && b && !S.detail[b]) { render(true); try { S.detail[b] = await getJSON("rooms/" + encodeURIComponent(b)); } catch (e) { toast("Couldn't load the room: " + e.message); } }
   render(true); scrollTo(0, 0);
   if (a === "card" && b && c) openRecord(b, c);
@@ -412,8 +424,8 @@ function render(navigating = false) {
   if (S.offline) off.textContent = S.loadedAt ? `Offline. Showing ${hhmm(S.loadedAt)} data. Retrying.` : `Can't reach the rooms server (${S.error}). Retrying.`;
   app.dataset.view = a || "inbox";
   const keep = anchors(app);
-  app.replaceChildren(a === "rooms" ? roomsView() : a === "room" ? roomView(b) : a === "more" ? moreView() : inboxView());
-  tabs(a === "rooms" || a === "room" ? "rooms" : a === "more" ? "more" : "inbox");
+  app.replaceChildren(a === "rooms" ? roomsView() : a === "room" ? roomView(b) : a === "agent" ? agentView() : a === "more" ? moreView() : inboxView());
+  tabs(a === "rooms" || a === "room" || a === "agent" ? "rooms" : a === "more" ? "more" : "inbox");
   restore(app, keep);
   const n = needCount();
   document.title = (n ? `(${n}) ` : "") + "claude-rooms";
@@ -846,9 +858,21 @@ function roomsView() {
   }
   return f;
 }
+function agentView() {
+  const [, room, session] = routes(), a = S.agent, f = h("div", {}), sec = (t, n) => h("div", { class: "sec" }, h("span", {}, t), h("span", {}, n ?? ""));
+  f.append(h("button", { class: "back", onclick: () => history.length > 1 ? history.back() : location.hash = "#/room/" + encodeURIComponent(room || "") }, "‹ Room"));
+  if (!a || a.error || a.session !== session && !a.session?.startsWith(session)) return (f.append(h("p", { class: "small" }, a?.error ? "Couldn't load this agent: " + a.error : "Loading…")), f);
+  const when = t => t ? String(t).slice(0, 16).replace("T", " ") + "Z" : "unknown";
+  f.append(h("div", { class: "agent-head" }, avatar(a, 64), h("div", {}, h("h2", { style: "margin:0" }, a.name), h("p", { class: "small", style: "margin:2px 0 0" }, [a.role, a.state, "session " + a.session.slice(0, 8)].filter(Boolean).join(" · ")))));
+  f.append(sec("Lifecycle"), h("div", { class: "note sec-body" }, `Started ${when(a.started_at)} · last seen ${when(a.last_seen_at)}${a.stopped ? " · stopped" : ""}`));
+  f.append(sec("Items", `${a.completed} of ${a.received} completed`), a.items.length ? h("div", { class: "items" }, a.items.map(i => h("button", { class: "it", onclick: () => openRecord(room, i.id) },
+    h("span", { class: "id" }, i.id), h("span", { class: "tt" }, i.title, h("small", {}, i.state))))) : h("p", { class: "small" }, "No items received."));
+  if (a.charter) f.append(sec("Charter"), h("div", { class: "note sec-body" }, a.charter));
+  return f;
+}
 function itemRows(room, items, sub) {
   return h("div", { class: "items" }, items.map(i => h("button", { class: "it", onclick: () => openRecord(room, i.id) },
-    h("span", { class: "id" }, i.id), h("span", { class: "tt" }, i.title, h("small", {}, sub(i))), i.critical ? h("span", { class: "star", title: "critical path" }, "★") : null)));
+    h("span", { class: "id" }, i.id), h("span", { class: "tt" }, i.title, h("small", {}, i.agent ? [i.agent.name, sub(i)].filter(Boolean).join(" · ") : sub(i))), i.agent ? avatar(i.agent, 22) : null, i.critical ? h("span", { class: "star", title: "critical path" }, "★") : null)));
 }
 // Lay out every recorded item, including done/dropped work. Unknown dependencies
 // remain in the accessible labels; cycles go in a final column rather than looping.
@@ -958,10 +982,10 @@ function roomView(name) {
   const st = ui.wakeState[name];
   const act = r.action ? h("button", { class: "primary", disabled: st && !st.error ? true : null, onclick: e => r.action.kind === "wake" ? wakeRoom(name, e.target) : r.action.kind === "resume" ? setPaused(name, false) : refresh() }, r.action.label) : null;
   const L = r.lead;
-  const leadLine = L ? `Lead: ${L.name && L.name !== "lead" ? L.name : "unnamed"} · ${{ working: "working now", idle: "idle " + ago(L.since_min), finished: "finished " + ago(L.since_min) + " ago", unreachable: "unreachable" }[L.state] || ""}${L.session ? ` · session ${L.session}` : ""}` : null;
+  const leadLine = L ? `Lead${L.agent ? "" : ": " + (L.name && L.name !== "lead" ? L.name : "unnamed")} · ${{ working: "working now", idle: "idle " + ago(L.since_min), finished: "finished " + ago(L.since_min) + " ago", unreachable: "unreachable" }[L.state] || ""}${L.session ? ` · session ${L.session}` : ""}` : null;
   f.append(h("section", { class: "hero" + (r.status === "stuck" ? " stuck" : ""), "aria-label": "Room status" },
     h("div", { class: "sline" }, glyph(r.status), h("span", {}, h("span", { class: "sr" }, (WORD[r.status] || r.status) + ": "), r.sentence || WORD[r.status])),
-    leadLine ? h("div", { class: "who" }, leadLine) : null,
+    leadLine ? h("div", { class: "who" }, agentLink(name, L?.agent, 22), leadLine) : null,
     st ? h("p", { class: st.error ? "err" : "small", style: "margin:8px 0 0 32px" }, st.text) : null, act));
   if (r.phase) f.append(h("p", { class: "phase" }, r.phase));
   for (const a of r.attention || []) f.append(h("p", { class: a.level === "loud" ? "err" : "small", style: "margin:4px 2px" }, (a.level === "loud" ? "▲ " : "· ") + a.sentence));
@@ -988,11 +1012,11 @@ function roomView(name) {
     const open = ui.openTeam.has(name), bodyId = "team-" + name;
     const body = h("div", { id: bodyId, hidden: !open, class: "team-body" });
     const labels = { doing: "Moving", review: "In review", blocked: "Blocked", todo: "Queued" };
-    if (leadLine) body.append(h("div", { class: "team-member small" }, leadLine));
+    if (leadLine) body.append(h("div", { class: "team-member small" }, agentLink(name, L?.agent, 22), leadLine));
     if (r.team_roster) body.append(h("div", { class: "team-member sec-body" }, r.team_roster));
     for (const member of r.team || []) body.append(h("div", { class: "team-member" },
       h("b", {}, member.name), !member.items.length ? h("p", { class: "small", style: "margin:4px 0 0" }, "No open assignments") : null, member.items.map(i => h("button", { class: "team-task", onclick: () => openRecord(name, i.id) },
-        h("span", { class: "small" }, labels[i.state] || i.state, " · ", i.id, i.tier ? " · " + i.tier : "", i.session_state ? " · agent " + i.session_state : "", i.session ? " · session " + i.session : ""), h("span", {}, i.title)))));
+        h("span", { class: "small" }, i.agent ? [avatar(i.agent, 16), " ", i.agent.name, " · "] : null, labels[i.state] || i.state, " · ", i.id, i.tier ? " · " + i.tier : "", i.session_state ? " · agent " + i.session_state : "", i.session ? " · session " + i.session : ""), h("span", {}, i.title)))));
     const toggle = h("button", { class: "plan-toggle", "aria-expanded": String(open), "aria-controls": bodyId, onclick: () => {
       const next = body.hidden; body.hidden = !next;
       if (next) ui.openTeam.add(name); else ui.openTeam.delete(name);
