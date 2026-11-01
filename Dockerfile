@@ -1,4 +1,4 @@
-# Minimal runtime for `rooms serve` (and the workers it starts) on a Komodo host.
+# Minimal runtime for `rooms serve` (and the workers it starts) on a single host.
 # node, claude and rooms are NOT in the image: they come from the bind-mounted
 # home (~/.local/node/bin, ~/.local/bin), see compose.production.yml.
 FROM debian:bookworm-slim
