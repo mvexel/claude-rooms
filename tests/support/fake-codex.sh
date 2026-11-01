@@ -14,6 +14,7 @@
   echo "ROOMS_AS:$ROOMS_AS"
   echo "TMPDIR:$TMPDIR"
   echo "SESSION:${CLAUDE_ROOMS_SESSION:-none}"
+  echo "GITCFG:${GIT_CONFIG_COUNT:-0} $(env | grep '^GIT_CONFIG_\(KEY\|VALUE\)' | sort | tr '\n' ' ')"
 } >> "$FAKE_CODEX_LOG"
 case "$1 $2" in
   "exec resume") [ "${FAKE_CODEX_RESUME:-}" = norollout ] && { echo "Error: no rollout found for thread id $5" >&2; exit 1; }

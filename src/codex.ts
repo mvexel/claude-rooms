@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { codexBin, config, roomsHome, stateDir } from './config.ts'
@@ -36,6 +36,7 @@ export type Run = {
 }
 
 const START_GRACE_MS = 30_000
+const EMPTY_LOCK_STALE_MS = 5_000
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const runBase = (room: string, id: string) => join(stateDir(), 'runs', room, id)
 const runFile = (room: string, id: string) => `${runBase(room, id)}.json`
@@ -286,7 +287,13 @@ function acquireLock(room: string, id: string): boolean {
       return true
     } catch {
       const holder = lockHolder(room, id)
-      if (holder === undefined) continue // vanished or being written: just retry the exclusive create
+      if (holder === undefined) {
+        // Vanished or being written: retry. But an empty file that stays empty (a runner died between create and write) is stale.
+        let age = 0
+        try { age = Date.now() - statSync(lockFile(room, id)).mtimeMs } catch { continue }
+        if (age > EMPTY_LOCK_STALE_MS) { try { unlinkSync(lockFile(room, id)) } catch {} }
+        continue
+      }
       if (pidLiveness(holder) !== 'dead') return false
       try { unlinkSync(lockFile(room, id)) } catch {}
     }
@@ -338,6 +345,11 @@ async function turn(room: string, id: string, run: Run, args: string[], setPid: 
   const env: NodeJS.ProcessEnv = { ...process.env, ROOMS_AS: spec.who, TMPDIR: spec.scratch }
   // Codex is not the lead and not a Claude session: nothing may make it look like one.
   for (const k of ['CLAUDE_ROOMS_SESSION', 'CLAUDE_CODE_SESSION_ID', 'ROOMS_TURN']) delete env[k]
+  // The sandbox has no gpg agent or pinentry: a signing config would fail every commit. Codex runs only, via env, never the repo's config.
+  const n = Number(env.GIT_CONFIG_COUNT) || 0
+  env.GIT_CONFIG_COUNT = String(n + 1)
+  env[`GIT_CONFIG_KEY_${n}`] = 'commit.gpgsign'
+  env[`GIT_CONFIG_VALUE_${n}`] = 'false'
   let sawCompleted = false
   let started = false
   let failure = ''
@@ -408,6 +420,26 @@ function recordSession(room: string, id: string, thread: string): void {
   } catch {}
 }
 
+// A runner killed mid-turn leaves its claimed messages in <Tnn>.q.taking.<pid>.
+// Put them back in the queue under their old names and say which dir it was.
+function restoreOrphans(room: string, id: string): string {
+  const base = `${spoolDir(room, id)}.taking.`
+  const dir = dirname(base)
+  const mine: string[] = []
+  try { for (const f of readdirSync(dir)) if (join(dir, f).startsWith(base)) mine.push(join(dir, f)) } catch { return '' }
+  const notes: string[] = []
+  for (const d of mine) {
+    const pid = Number(d.slice(base.length))
+    if (pid && pidLiveness(pid) !== 'dead') continue
+    let n = 0
+    mkdirSync(spoolDir(room, id), { recursive: true })
+    for (const name of msgFiles(d)) try { renameSync(join(d, name), join(spoolDir(room, id), name)); n++ } catch {}
+    try { rmSync(d, { recursive: true, force: true }) } catch {}
+    notes.push(`Orphaned ${d.slice(dir.length + 1)} held ${n} undelivered message${n === 1 ? '' : 's'}; restored to the queue.`)
+  }
+  return notes.join(' ')
+}
+
 // Run by sweep: a runner that vanished without recording an outcome (killed, host
 // restart) is a failed run, and the lead hears it once.
 export function reconcileCodex(): string[] {
@@ -425,7 +457,8 @@ export function reconcileCodex(): string[] {
       run.notified = true
       writeRun(r.name, id, run)
       try { unlinkSync(lockFile(r.name, id)) } catch {}
-      emit(r.name, `${id}'s Codex worker exited unexpectedly (no outcome recorded) with the item still doing. Check ${runBase(r.name, id)}.jsonl and .log, then rooms spawn ${r.name} ${id} --backend codex, or reassign.`)
+      const orphans = restoreOrphans(r.name, id)
+      emit(r.name, `${id}'s Codex worker exited unexpectedly (no outcome recorded) with the item still doing.${orphans ? ` ${orphans}` : ''} Check ${runBase(r.name, id)}.jsonl and .log, then rooms spawn ${r.name} ${id} --backend codex, or reassign.`)
       out.push(`${r.name}: ${id} codex run exited unexpectedly`)
     }
   }

@@ -335,3 +335,49 @@ test('a tell that sees a live lock holder is spooled first, so the exiting runne
   assert.ok(p.indexOf('while locked') >= 0 && p.indexOf('while locked') < p.indexOf('after'), p)
   assert.equal(readdirSync(spool).length, 0)
 })
+
+test('codex runs get commit.gpgsign=false by env, keeping any GIT_CONFIG already set', async () => {
+  const s = sandbox()
+  s.env.GIT_CONFIG_COUNT = '1'
+  s.env.GIT_CONFIG_KEY_0 = 'user.name'
+  s.env.GIT_CONFIG_VALUE_0 = 'x'
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'idle')
+  const line = readFileSync(s.env.FAKE_CODEX_LOG!, 'utf8').split('\n').find(l => l.startsWith('GITCFG:'))!
+  assert.match(line, /^GITCFG:2 /)
+  assert.match(line, /GIT_CONFIG_KEY_0=user\.name/)
+  assert.match(line, /GIT_CONFIG_KEY_1=commit\.gpgsign/)
+  assert.match(line, /GIT_CONFIG_VALUE_1=false/)
+})
+
+test('sweep names an orphaned .q.taking.<pid> dir and restores its messages to the queue', async () => {
+  const s = sandbox()
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'idle')
+  const runs = join(s.env.CLAUDE_ROOMS_STATE!, 'runs', 'r')
+  const dead = join(runs, 'T01.q.taking.99999999')
+  mkdirSync(dead, { recursive: true })
+  writeFileSync(join(dead, '00000000000001-1-aaaa.json'), JSON.stringify({ at: 'x', text: 'lost one' }))
+  const run = s.run()
+  run.state = 'running'; run.notified = false; run.pid = 99999999; run.codexPid = undefined
+  run.startedAt = '2020-01-01T00:00:00Z'
+  writeFileSync(s.runFile, JSON.stringify(run))
+  s.ok('sweep')
+  assert.match(s.inbox(), /exited unexpectedly[^"]*T01\.q\.taking\.99999999 held 1 undelivered message; restored/)
+  assert.equal(existsSync(dead), false)
+  assert.deepEqual(readdirSync(join(runs, 'T01.q')).filter(f => f.endsWith('.json')), ['00000000000001-1-aaaa.json'])
+})
+
+test('an empty lock file older than a few seconds is stale and taken over', async () => {
+  const s = sandbox()
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'idle')
+  const lock = join(s.env.CLAUDE_ROOMS_STATE!, 'runs', 'r', 'T01.lock')
+  writeFileSync(lock, '')
+  const { utimesSync } = await import('node:fs')
+  const old = new Date(Date.now() - 60_000)
+  utimesSync(lock, old, old)
+  s.ok('tell', 'r', 'after stale empty lock', '--item', 'T01')
+  await s.wait(() => promptLines(s).length === 1 && s.run().state === 'idle')
+  assert.match(promptLines(s)[0], /after stale empty lock/)
+})
