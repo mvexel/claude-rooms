@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { alive } from './backend.ts'
 import { roomsHome, stateDir } from './config.ts'
 
 // Git for the rooms repo, and the one lock every writer that commits takes.
@@ -33,7 +34,7 @@ export function withLock<T>(name: string, fn: () => T): T {
         throw new Error(unwritable(stateDir(), e as Error))
       }
       try {
-        if (Date.now() - statSync(dir).mtimeMs > STALE_MS) rmSync(dir, { recursive: true, force: true })
+        if (abandoned(dir)) rmSync(dir, { recursive: true, force: true })
       } catch {}
       if (Date.now() > deadline) throw new Error(`lock ${name} held: ${safeRead(join(dir, 'holder'))}`)
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
@@ -44,6 +45,16 @@ export function withLock<T>(name: string, fn: () => T): T {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+}
+
+// A lock whose holder process is gone (a hook killed by its watchdog skips
+// `finally`) is free at once. A holder file not yet written is given a few
+// seconds; a holder we can't read falls back to the age limit.
+function abandoned(dir: string): boolean {
+  const age = Date.now() - statSync(dir).mtimeMs
+  const pid = Number(safeRead(join(dir, 'holder')).split(' ')[0])
+  if (Number.isInteger(pid) && pid > 0) return !alive(pid) || age > STALE_MS
+  return age > (safeRead(join(dir, 'holder')) === '?' ? 10_000 : STALE_MS)
 }
 
 export function unwritable(path: string, e: Error): string {

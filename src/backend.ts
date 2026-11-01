@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { randomUUID } from 'node:crypto'
 import { roomsHome, stateDir } from './config.ts'
 
 // Where room records and runtime state (inboxes, leases, receipts) are stored.
@@ -21,7 +23,10 @@ export interface Backend {
   exists(path: string): boolean
   list(dir: string): { name: string; dir: boolean }[] // [] when the dir does not exist
   remove(path: string): void // a file or a whole folder; missing is fine
-  claim(path: string): string | undefined // take a file's text and remove it, once, for one caller
+  // Take a file's text and remove it, once, for one caller. `id` names the
+  // attempt: a backend that sees the same id again returns the same text, so
+  // a caller killed before it printed can ask again without losing it.
+  claim(path: string, id?: string): string | undefined
 }
 
 export const localBackend: Backend = {
@@ -54,16 +59,37 @@ export const localBackend: Backend = {
     rmSync(path, { recursive: true, force: true })
   },
   claim(path) {
+    // A claimer killed between its rename and its unlink left `<file>.<pid>.taking`;
+    // its text is ours now (renamed first, so two recoverers don't both read it).
+    let text = ''
+    const base = basename(path)
+    for (const e of localBackend.list(dirname(path))) {
+      const m = e.name.startsWith(base + '.') && e.name.match(/\.(\d+)\.taking$/)
+      if (!m || Number(m[1]) === process.pid || alive(Number(m[1]))) continue
+      const mine = `${path}.${process.pid}.taking`
+      try {
+        renameSync(join(dirname(path), e.name), mine)
+        text += readFileSync(mine, 'utf8')
+        unlinkSync(mine)
+      } catch {}
+    }
     const claimed = `${path}.${process.pid}.taking`
     try {
       renameSync(path, claimed)
-    } catch {
-      return undefined
-    }
-    const text = readFileSync(claimed, 'utf8')
-    unlinkSync(claimed)
-    return text
+      text += readFileSync(claimed, 'utf8')
+      unlinkSync(claimed)
+    } catch {}
+    return text || undefined
   },
+}
+
+export function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM'
+  }
 }
 
 let current: Backend = localBackend
@@ -154,7 +180,22 @@ export function routed(local: Backend, remote: Backend, rooms: string[]): Routed
     append: (p, t) => guarded(p, b => b.append(p, t)),
     exists: p => guarded(p, b => b.exists(p)),
     remove: p => guarded(p, b => b.remove(p)),
-    claim: p => guarded(p, b => b.claim(p)),
+    claim(p) {
+      const r = room(p)
+      if (r === undefined) return local.claim(p)
+      // The hub empties the inbox when it answers. The attempt's id is kept on
+      // disk until the answer is in hand, so a hook killed meanwhile asks
+      // again with the same id and gets the same lines (not an empty inbox).
+      const file = join(stateDir(), 'claims', createHash('sha256').update(resolve(p)).digest('hex').slice(0, 24))
+      let id = local.read(file)?.trim()
+      if (!id) {
+        id = `c-${randomUUID()}`
+        local.write(file, id)
+      }
+      const text = via(r, () => remote.claim(p, id))
+      local.remove(file)
+      return text
+    },
     list(dir) {
       if (!roots().some(r => r === resolve(dir))) return guarded(dir, b => b.list(dir))
       const mine = local.list(dir).filter(e => !set.has(e.name))
@@ -232,6 +273,12 @@ export const HUB_TIMEOUT_MS = 8000
 
 // Whether a room's records live behind a module rather than in files on this
 // machine, so a record's path is a key and not something an editor can open.
+// Whether anything outside this machine's files is in play, which is when a
+// slow call can hang a hook and the watchdog is needed.
+export function routingActive(): boolean {
+  return current !== localBackend
+}
+
 export function isRouted(room: string): boolean {
   if (current === localBackend) return false
   return !('remote' in current) || (current as RoutedBackend).rooms.has(room)

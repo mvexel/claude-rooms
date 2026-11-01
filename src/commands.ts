@@ -3,7 +3,7 @@ import { type Dirent, appendFileSync, cpSync, existsSync, mkdirSync, readFileSyn
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { HUB_TIMEOUT_MS, backend, loadBackend } from './backend.ts'
+import { HUB_TIMEOUT_MS, backend, isRouted, loadBackend, routingActive } from './backend.ts'
 import { watchdog } from './watchdog.ts'
 import { applyDueDefaults, recordAnswer } from './answer.ts'
 import { claudeBin, claudeDir, config, legacyStateDir, roomsHome, scratchDir, stateDir } from './config.ts'
@@ -14,7 +14,7 @@ import { findWorkItem, publishWorking } from './working.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
 import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession, WORKER_DISALLOWED_TOOLS } from './sessions.ts'
-import { isHuman, roomState } from './state.ts'
+import { isHuman, roomState, tryRoomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
 import { repositoryIdentity, repositoryRoot, workerWorktree } from './repositories.ts'
 import { pruneCandidates, pruneRoom } from './prune.ts'
@@ -681,14 +681,29 @@ export function setPaused(r: Room, on: boolean): string {
 
 // ---- views -----------------------------------------------------------------
 
+// A routed room that can't be read counts as open: the overview lists it as unreachable.
+function closedOrUnknown(r: Room): boolean {
+  try {
+    return r.isClosed()
+  } catch (e) {
+    if (isRouted(r.name)) return false
+    throw e
+  }
+}
+
 function cmdStatus(a: Args): { text: string; code: number } {
   const sessions = listSessions()
-  const rooms = a._.length ? a._.map(n => room(n)) : Room.all().filter(r => !r.isClosed())
+  const rooms = a._.length ? a._.map(n => room(n)) : Room.all().filter(r => !closedOrUnknown(r))
   if (!rooms.length) return { text: `no rooms in ${roomsHome()}`, code: 0 }
-  if (has(a, 'json')) return { text: JSON.stringify(rooms.map(r => ({ room: r.name, ...pick(roomState(r, { sessions, yielding: has(a, 'yield') })) }))), code: 0 }
+  // With rooms named, a failure is the answer; in the overview, a room on the
+  // hub that cannot be read is listed as unreachable and the rest still show.
+  const states = rooms.map(r => (a._.length ? { st: roomState(r, { sessions, yielding: has(a, 'yield') }) } : tryRoomState(r, { sessions, yielding: has(a, 'yield') })))
+  if (has(a, 'json')) return { text: JSON.stringify(rooms.map((r, i) => ('st' in states[i] ? { room: r.name, ...pick(states[i].st) } : { room: r.name, unreachable: true, error: states[i].error }))), code: 0 }
   let stuck = false
-  const out = rooms.map(r => {
-    const st = roomState(r, { sessions, yielding: has(a, 'yield') })
+  const out = rooms.map((r, i) => {
+    const s = states[i]
+    if (!('st' in s)) return `${r.name} · UNREACHABLE: ${s.error}`
+    const st = s.st
     if (has(a, 'yield') && st.status === 'stuck') stuck = true
     let t = statusText(r, st, has(a, 'brief'))
     if (has(a, 'yield') && st.dispatchable.length) t += `\n  ${st.dispatchable.join(' ')} ready with no agent: dispatch before you end your turn`
@@ -976,8 +991,8 @@ Setup and plumbing
 Set ROOMS_AS=<name> so Log lines carry it.`
 
 export async function run(argv: string[]): Promise<{ text: string; code: number }> {
-  if (argv[0] === 'hook') watchdog(HUB_TIMEOUT_MS + 4000, 'the hook')
   await loadBackend()
+  if (argv[0] === 'hook' && routingActive()) watchdog(HUB_TIMEOUT_MS + 4000, 'the hook')
   const a = parseArgs(argv, BOOLEANS)
   const cmd = a._.shift() ?? 'help'
   if (cmd !== 'init') moveLegacyState()
