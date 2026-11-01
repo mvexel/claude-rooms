@@ -82,3 +82,9 @@ test('hallMonitor fields are editable, validated, and applied on reload', () => 
   saveOverrides(mergePatch(configLayers().overrides, validatePatch({ hallMonitor: { maxThreads: null, queueLimit: null } })))
   assert.deepEqual(config().hallMonitor, { maxThreads: 4, queueLimit: 1 })
 })
+
+test('config.json hallMonitor out of range is dropped with a reason', () => {
+  writeFileSync(process.env.CLAUDE_ROOMS_CONFIG!, '{ "hallMonitor": { "maxThreads": 0, "queueLimit": 2 } }\n')
+  assert.deepEqual(config().hallMonitor, { maxThreads: 4, queueLimit: 2 })
+  assert.match(configLayers().fileError!, /maxThreads must be a whole number of at least 1/)
+})

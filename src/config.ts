@@ -230,7 +230,7 @@ const stamp = (f: string) => {
   try { return statSync(f).mtimeMs + ':' + statSync(f).size } catch { return '-' }
 }
 
-export type Layers = { defaults: Config; file: Partial<Config>; overrides: Overrides; overridesError?: string; effective: Config }
+export type Layers = { defaults: Config; file: Partial<Config>; overrides: Overrides; overridesError?: string; fileError?: string; effective: Config }
 let cached: { key: string; layers: Layers } | undefined
 
 // Re-read when either file changes, so page edits and hand edits apply without
@@ -239,6 +239,16 @@ export function configLayers(): Layers {
   const key = stamp(configFile()) + '|' + stamp(overridesFile())
   if (cached?.key === key) return cached.layers
   const file: Partial<Config> = readJsonFile(configFile())
+  // A hand-edited hallMonitor value out of range is dropped, with the reason shown.
+  let fileError: string | undefined
+  const hm: any = (file as any).hallMonitor
+  if (isObj(hm)) {
+    const bad: string[] = []
+    for (const [f, min] of [['maxThreads', 1], ['queueLimit', 0]] as const) {
+      if (f in hm && (typeof hm[f] !== 'number' || !Number.isInteger(hm[f]) || hm[f] < min)) { delete hm[f]; bad.push(`hallMonitor.${f} must be a whole number of at least ${min}`) }
+    }
+    if (bad.length) fileError = `config.json: ${bad.join('; ')} (default used)`
+  }
   let overrides: Overrides = {}
   let overridesError: string | undefined
   try {
@@ -246,7 +256,7 @@ export function configLayers(): Layers {
     overrides = r.o
     overridesError = r.error
   } catch (e) { overridesError = `overrides file unreadable: ${(e as Error).message}` }
-  const layers = { defaults: DEFAULTS, file, overrides, overridesError, effective: merge(file, overrides) }
+  const layers = { defaults: DEFAULTS, file, overrides, overridesError, fileError, effective: merge(file, overrides) }
   cached = { key, layers }
   return layers
 }

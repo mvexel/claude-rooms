@@ -46,7 +46,7 @@ Start the page with `rooms serve` and open <http://127.0.0.1:8787/>. Open `claud
 
 The design and the reasoning behind it are in [docs/design.md](docs/design.md); the page's API is in [docs/ui.md](docs/ui.md).
 
-**Hall monitor.** Past `hallMonitor.queueLimit` parallel-ready items waiting on one `owner` role, `rooms status` names clones ("dev 2") and `rooms spawn` starts them under that name; `hallMonitor.maxThreads` (default 4) caps running workers per room, and spawn refuses beyond it unless `--force`. Both are editable on the Settings page; see Configuration in the docs.
+**Hall monitor.** Past `hallMonitor.queueLimit` parallel-ready items waiting behind one `owner` role, the excess `rooms status` names clones ("dev 2") and `rooms spawn` starts them under that name; `hallMonitor.maxThreads` (default 4) caps running workers per room, and spawn refuses beyond it unless `--over-cap`. Both are editable on the Settings page; see Configuration in the docs.
 
 ## Develop
 

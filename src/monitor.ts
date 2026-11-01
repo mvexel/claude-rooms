@@ -28,19 +28,25 @@ export function hallMonitor(room: Room, sessions: Session[] = listSessions()): P
     const role = roleOf(room.find(id).get('owner'))
     byRole.set(role, [...(byRole.get(role) ?? []), id])
   }
-  const taken = new Set(items.filter(i => i.get('agent')).map(i => i.get('owner')))
-  // An idle role's own first item takes a thread too, before any clone does.
-  const idle = [...byRole.keys()].filter(role => !running.some(i => roleOf(i.get('owner')) === role)).length
-  let free = Math.max(0, maxThreads - running.length - idle)
+  // Clone names are recorded on the item at spawn, so the next clone never reuses one.
+  const taken = new Set(items.map(i => i.get('clone')).filter(Boolean))
   const clones: Clone[] = []
   const queued: string[] = []
+  let free = Math.max(0, maxThreads - running.length)
+  // At the cap nothing can start, so every ready item waits for a thread.
+  if (!free) return { running: running.length, max: maxThreads, clones, queued: [...byRole.values()].flat() }
+  // An idle role's own first item takes a thread before any clone does.
+  const rest = new Map<string, string[]>()
   for (const [role, ids] of byRole) {
-    const busy = running.some(i => roleOf(i.get('owner')) === role)
-    // An idle member takes the first item itself; the rest wait behind it.
-    const behind = ids.slice(busy ? 0 : 1)
-    if (behind.length <= queueLimit) continue
+    if (running.some(i => roleOf(i.get('owner')) === role)) { rest.set(role, ids); continue }
+    if (free > 0) free--
+    else queued.push(ids[0])
+    rest.set(role, ids.slice(1))
+  }
+  // Only the excess over queueLimit gets clones; the others wait behind the role.
+  for (const [role, ids] of rest) {
     let n = 1
-    for (const id of behind) {
+    for (const id of ids.slice(queueLimit)) {
       if (free <= 0) {
         queued.push(id)
         continue
