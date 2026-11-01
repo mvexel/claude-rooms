@@ -126,8 +126,9 @@ export const WORKER_DISALLOWED_TOOLS = 'AskUserQuestion,EnterWorktree'
 
 // Claude refuses to start in a folder the owner never trusted ("Workspace not
 // trusted"). Trust is recorded per folder in ~/.claude.json; a folder inherits
-// it from an ancestor. Returns the untrusted folder, or undefined when fine.
-export function untrustedFolder(...dirs: string[]): string | undefined {
+// it from an ancestor, and a git worktree from its main repository (pass that
+// as repo). Returns dir when neither is trusted, else undefined.
+export function untrustedFolder(dir: string, repo?: string): string | undefined {
   let projects: { [k: string]: { hasTrustDialogAccepted?: boolean } } = {}
   try {
     const file = process.env.CLAUDE_CONFIG_DIR ? join(claudeDir(), '.claude.json') : join(homedir(), '.claude.json')
@@ -135,16 +136,13 @@ export function untrustedFolder(...dirs: string[]): string | undefined {
   } catch {
     return undefined // unreadable: let claude decide
   }
-  for (const d of dirs) {
-    let cur = d
-    for (;;) {
-      if (projects[cur]?.hasTrustDialogAccepted) break
-      const up = dirname(cur)
-      if (up === cur) return d
-      cur = up
+  const trusted = (d: string): boolean => {
+    for (let cur = d; ; cur = dirname(cur)) {
+      if (projects[cur]?.hasTrustDialogAccepted) return true
+      if (dirname(cur) === cur) return false
     }
   }
-  return undefined
+  return trusted(dir) || (repo !== undefined && trusted(repo)) ? undefined : dir
 }
 
 export function startArgs(o: StartOptions): string[] {

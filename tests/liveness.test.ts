@@ -84,6 +84,8 @@ test('untrustedFolder: a folder is trusted by itself or an ancestor; else it is 
     assert.equal(untrustedFolder('/x/trusted/sub/wt'), undefined)
     assert.equal(untrustedFolder('/x/no'), '/x/no')
     assert.equal(untrustedFolder('/x/trusted-wt'), '/x/trusted-wt') // beside, not under
+    assert.equal(untrustedFolder('/x/trusted-room-t01', '/x/trusted'), undefined) // a worktree shares its repo's trust
+    assert.equal(untrustedFolder('/x/no-room-t01', '/x/no'), '/x/no-room-t01')
   } finally {
     if (cfg === undefined) delete process.env.CLAUDE_CONFIG_DIR
     else process.env.CLAUDE_CONFIG_DIR = cfg
