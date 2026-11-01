@@ -260,6 +260,21 @@ async function readJson(req: IncomingMessage): Promise<any> {
   return JSON.parse(raw || '{}')
 }
 
+type Caller = { headers: IncomingMessage['headers']; remoteAddress?: string }
+
+// A direct loopback connection with no proxy headers is the local user at the
+// machine; tailscale serve/funnel proxy from loopback too but add headers.
+export function isAllowed(req: Caller, users: string[], readonly = false): boolean {
+  if (readonly) return false
+  if (!users.length) return true
+  const h = req.headers
+  const login = String(h['tailscale-user-login'] ?? '')
+  if (login) return users.includes(login)
+  const proxied = Object.keys(h).some(k => k === 'x-forwarded-for' || k === 'forwarded' || k.startsWith('tailscale-'))
+  const direct = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.remoteAddress ?? '')
+  return direct && !proxied
+}
+
 export type ServeOptions = { port: number; host: string }
 
 export async function serve(o: ServeOptions): Promise<void> {
@@ -267,7 +282,7 @@ export async function serve(o: ServeOptions): Promise<void> {
   const loopback = ['127.0.0.1', 'localhost', '::1'].includes(o.host)
   if (!users.length && !loopback) throw new Error('refusing to listen beyond loopback without ROOMS_USERS (the tailnet logins allowed to answer)')
   const readonly = process.env.ROOMS_READONLY === '1'
-  const allowed = (req: IncomingMessage) => !readonly && (!users.length || users.includes(String(req.headers['tailscale-user-login'] ?? '')))
+  const allowed = (req: IncomingMessage) => isAllowed({ headers: req.headers, remoteAddress: req.socket.remoteAddress }, users, readonly)
 
   let sessions: Session[] = listSessions()
   let sessionsAt = Date.now()
@@ -343,7 +358,7 @@ export async function serve(o: ServeOptions): Promise<void> {
       }
       if (req.method !== 'POST') return send(req, res, 405, { ok: false, error: 'method' })
       if (!/json|text\/plain/.test(String(req.headers['content-type'] ?? ''))) return send(req, res, 415, { ok: false, error: 'JSON only' })
-      if (!allowed(req)) return send(req, res, 403, { ok: false, error: 'not allowed' })
+      if (!allowed(req)) return send(req, res, 403, { ok: false, error: readonly ? 'read-only' : 'not allowed: open this page via the tailnet URL (signed in as a login listed in ROOMS_USERS), or from the machine itself at http://127.0.0.1' })
       const body = await readJson(req)
       if (parts[0] === 'api' && parts[1] === 'cards' && parts.length === 5) {
         const room = new Room(parts[2]).must()
