@@ -70,3 +70,15 @@ test('a top-level null resets a whole section', () => {
   const next = mergePatch(configLayers().overrides, validatePatch({ tiers: null, worker: null, lead: null, provisionalMinutes: null }))
   assert.deepEqual(next, {})
 })
+
+test('hallMonitor fields are editable, validated, and applied on reload', () => {
+  const f = settingsFields().filter(x => x.key.startsWith('hallMonitor.'))
+  assert.deepEqual(f.map(x => [x.key, x.editable]).sort(), [['hallMonitor.maxThreads', true], ['hallMonitor.queueLimit', true]])
+  for (const bad of [{ hallMonitor: { maxThreads: 0 } }, { hallMonitor: { maxThreads: 'x' } }, { hallMonitor: { queueLimit: -1 } }, { hallMonitor: { queueLimit: 1.5 } }, { hallMonitor: { other: 1 } }])
+    assert.throws(() => validatePatch(bad), undefined, JSON.stringify(bad))
+  saveOverrides(mergePatch(configLayers().overrides, validatePatch({ hallMonitor: { maxThreads: 7, queueLimit: 0 } })))
+  assert.deepEqual(config().hallMonitor, { maxThreads: 7, queueLimit: 0 })
+  assert.equal(settingsFields().find(x => x.key === 'hallMonitor.maxThreads')!.from, 'page')
+  saveOverrides(mergePatch(configLayers().overrides, validatePatch({ hallMonitor: { maxThreads: null, queueLimit: null } })))
+  assert.deepEqual(config().hallMonitor, { maxThreads: 4, queueLimit: 1 })
+})

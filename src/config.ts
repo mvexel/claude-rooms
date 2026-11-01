@@ -43,6 +43,7 @@ export type Config = {
   lead: { permissionMode: string; model?: string; allowedTools: string[] }
   provisionalMinutes: number // a two-way default applies this long after it is set, at least 30
   commitDebounceMs: number
+  hallMonitor: { maxThreads: number; queueLimit: number } // parallel workers per room; items that may wait on one role before it is cloned
 }
 
 // Staffing tiers follow the old rubric; deep work needs the owner's ask, so it
@@ -57,6 +58,7 @@ const DEFAULTS: Config = {
   lead: { permissionMode: 'auto', allowedTools: ['Bash(rooms *)', 'Read', 'Edit', 'Write'] },
   provisionalMinutes: 60,
   commitDebounceMs: 60_000,
+  hallMonitor: { maxThreads: 4, queueLimit: 1 },
 }
 
 // Page edits go to a separate overrides file, loaded after config.json, so a
@@ -75,6 +77,7 @@ export type Overrides = {
   lead?: { model?: string }
   provisionalMinutes?: number
   commitDebounceMs?: number
+  hallMonitor?: { maxThreads?: number; queueLimit?: number }
 }
 
 const isObj = (v: unknown): v is { [k: string]: unknown } => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -119,6 +122,14 @@ export function validatePatch(patch: unknown): { [k: string]: any } {
         if (f === 'permissionMode') throw new Error('worker.permissionMode is read-only here; edit config.json by hand')
         if (f !== 'tier') throw new Error(`worker.${f} cannot be set here`)
         out.worker[f] = x === null ? null : nonEmpty(x, 'worker.tier')
+      }
+    } else if (k === 'hallMonitor') {
+      if (v === null) { out.hallMonitor = null; continue }
+      if (!isObj(v)) throw new Error('hallMonitor must be an object')
+      out.hallMonitor = {}
+      for (const [f, x] of Object.entries(v)) {
+        if (f !== 'maxThreads' && f !== 'queueLimit') throw new Error(`hallMonitor.${f} cannot be set here`)
+        out.hallMonitor[f] = x === null ? null : num(x, `hallMonitor.${f}`, f === 'maxThreads' ? 1 : 0)
       }
     } else if (k === 'lead') {
       if (v === null) { out.lead = null; continue }
@@ -209,6 +220,7 @@ function merge(user: Partial<Config>, over: Overrides): Config {
     ...(over.provisionalMinutes !== undefined ? { provisionalMinutes: over.provisionalMinutes } : {}),
     ...(over.commitDebounceMs !== undefined ? { commitDebounceMs: over.commitDebounceMs } : {}),
     tiers,
+    hallMonitor: { ...DEFAULTS.hallMonitor, ...user.hallMonitor, ...over.hallMonitor },
     worker: { ...DEFAULTS.worker, ...user.worker, ...over.worker },
     lead: { ...DEFAULTS.lead, ...user.lead, ...over.lead },
   }
