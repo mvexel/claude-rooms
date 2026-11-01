@@ -458,7 +458,7 @@ export default () => ({
   const added = ok('add', 'hubbed', 'Second', '--cap', '1', '--acc', 'works')
   const item = added.match(/T01: (\S+)/)![1]
   assert.ok(item.startsWith(join(state, 'scratch', 'hubbed', 'T01')), item)
-  assert.equal(existsSync(item), false) // add makes no copy; the first command that touches the item does
+  assert.ok(existsSync(item)) // add makes the copy it prints
   ok('set', 'hubbed', 'T01', 'owner=builder')
   assert.ok(existsSync(item))
   assert.ok(existsSync(join(tree, 'now-head.md')))
@@ -478,6 +478,9 @@ export default () => ({
   assert.match(onHub('rooms_hubbed_notes_builder.md'), /hello/)
   assert.match(readdirSync(hub).filter(f => /items_T01/.test(f)).map(f => readFileSync(join(hub, f), 'utf8')).join(''), /works well/)
   assert.equal(existsSync(join(base, 'rooms', 'hubbed')), false) // the folder is never created
+
+  // after syncIn pushed the edit, the file's base is what was pushed (a hook does syncIn only)
+  assert.equal(readFileSync(join(tree, '.now-head.md.base'), 'utf8'), onHub('rooms_hubbed_now-head.md'))
 
   // a change on the hub meanwhile stays; the same field changed on both sides: hub wins, the edit is kept aside
   edit(hubFile('rooms_hubbed_now-head.md'), /phase:.*/, 'phase: from the hub')

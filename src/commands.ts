@@ -10,7 +10,7 @@ import { claudeBin, claudeDir, config, legacyStateDir, roomsHome, scratchDir, st
 import { autocommit, commit, excludeLocal, git, pushInBackground, unwritable, withLock } from './git.ts'
 import { applyUserSandbox, planUserSandbox, sandboxGap } from './sandbox.ts'
 import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
-import { editDir, editPath, findWorkItem, publishWorking, syncIn, syncOut, workingPath } from './working.ts'
+import { editDir, editPath, findWorkItem, publishWorking, syncIn, syncOut } from './working.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
 import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession, WORKER_DISALLOWED_TOOLS } from './sessions.ts'
@@ -327,8 +327,8 @@ function cmdAdd(a: Args): string {
     ['Result', 'Done:\nArtifacts:\nUnverified:\nNext:'],
   ])
   changed(r, `${id} added`)
-  // A routed room's working copy is made when a worker starts on the item (spawn), not here.
-  return `${id}: ${workingPath(r.name, rec)}`
+  // A routed room's item is on the hub: the lead edits a working copy, so make it (the path printed exists).
+  return `${id}: ${publishWorking(r, rec)}`
 }
 
 // Who gets a card: the owner sees one-way doors, premises, gates, todos and
@@ -916,12 +916,19 @@ function cmdHook(a: Args): string {
   const session = sessionArg(a) || fail('--session required')
   const me = whoami(session)
   // A routed lead's edits to the working tree go to the hub (no hub call when nothing changed).
+  let syncNote = ''
   if ((verb === 'poll' || verb === 'stop') && me.role === 'lead' && me.room && isRouted(me.room)) {
     try {
       const lr = new Room(me.room)
-      if (lr.exists()) syncIn(lr)
-    } catch {}
+      if (lr.exists()) {
+        const w = syncIn(lr)
+        if (w.length) syncNote = `[rooms] Your edits to the working tree were not all taken in: ${w.join('; ')}`
+      }
+    } catch (e) {
+      syncNote = `[rooms] Could not take your working-tree edits to the hub: ${(e as Error).message}`
+    }
   }
+  if (verb === 'stop' && syncNote && me.role === 'lead') return syncNote
   if (verb === 'poll') {
     // Hold the lease on this session's inbox (the room's for the lead, the
     // item's for a worker), and take what waits when asked to.
@@ -931,7 +938,7 @@ function cmdHook(a: Args): string {
     if (!me.room) return JSON.stringify(mail ? { ...me, events: mail } : me)
     const key = me.role === 'lead' ? me.room : `${me.room}/${me.item}`
     beat(key, session)
-    const text = [mail, has(a, 'take') ? render(key, take(key)) : ''].filter(Boolean).join('\n\n')
+    const text = [syncNote, mail, has(a, 'take') ? render(key, take(key)) : ''].filter(Boolean).join('\n\n')
     return JSON.stringify({ ...me, events: text, status_line: roomStatusLine(new Room(me.room)) })
   }
   if (verb === 'stop') {

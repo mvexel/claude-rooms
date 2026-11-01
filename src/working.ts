@@ -156,7 +156,13 @@ function mergeRecord(hub: string, base: string, mine: string): { text: string; c
 }
 
 // Take edits made in the working tree (and in item copies) to the hub.
-export function syncIn(r: Room): void {
+// Returns the warnings it printed (conflicts), so a hook can hand them to the lead.
+export function syncIn(r: Room): string[] {
+  const notes: string[] = []
+  const warn = (m: string) => {
+    notes.push(m)
+    process.stderr.write(`rooms: ${m}\n`)
+  }
   const root = treeDir(r.name)
   for (const rel of treeFiles(r.name)) {
     const file = join(root, rel)
@@ -165,7 +171,10 @@ export function syncIn(r: Room): void {
     const key = join(r.dir, rel)
     if (!existsSync(baseFile)) {
       // A file made here: only notes are new by hand; the hub's copy, if any, is not replaced.
-      if (rel.startsWith('notes/') && !backend().exists(key)) backend().write(key, mine)
+      if (rel.startsWith('notes/') && !backend().exists(key)) {
+        backend().write(key, mine)
+        refresh(file, baseFile, mine)
+      }
       continue
     }
     const base = readFileSync(baseFile, 'utf8')
@@ -174,13 +183,18 @@ export function syncIn(r: Room): void {
     const hub = backend().read(key)
     if (hub === undefined || hub === base) {
       backend().write(key, mine)
+      refresh(file, baseFile, mine) // what was written (or queued) is now the base
       continue
     }
-    if (hub === mine) continue
+    if (hub === mine) {
+      refresh(file, baseFile, mine)
+      continue
+    }
     if (/^---\n/.test(mine) && rel.endsWith('.md') && !rel.startsWith('notes/')) {
       const m = mergeRecord(hub, base, mine)
       if (m.text !== hub) backend().write(key, m.text)
-      if (m.clash.length) {
+      if (!m.clash.length) refresh(file, baseFile, m.text)
+      else {
         writeFileSync(`${file}.conflict`, mine)
         warn(`${rel} changed on the hub too (${m.clash.join(', ')}); the hub's version stays, yours is in ${file}.conflict`)
       }
@@ -201,7 +215,9 @@ export function syncIn(r: Room): void {
     const before = rec.toString()
     pullWorking(r, rec)
     if (rec.toString() !== before) rec.save()
+    publishWorking(r, rec) // the copy's base follows what was saved
   }
+  return notes
 }
 
 // Item copies of the room that hold edits not yet taken in; unchanged ones cost nothing.
@@ -237,9 +253,19 @@ export function syncOut(r: Room): void {
     const file = join(root, rel)
     refresh(file, treeBase(file), text)
   }
+  // Item copies: read the hub's text for the file and refresh only when it differs from the copy's base
+  // (no record lookup, nothing written for a copy whose hub record is unchanged).
   for (const id of itemCopies(r)) {
+    const dir = scratchDir(r.name, id)
+    let names: string[] = []
     try {
-      publishWorking(r, r.find(id))
+      names = readdirSync(dir).filter(n => n.endsWith('.md') && !n.startsWith('.'))
     } catch {}
+    for (const n of names) {
+      const file = join(dir, n)
+      const text = backend().read(join(r.dir, 'items', n))
+      if (text === undefined || text === readOr(baseOf(file))) continue
+      refresh(file, baseOf(file), text)
+    }
   }
 }
