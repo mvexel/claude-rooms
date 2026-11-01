@@ -250,6 +250,22 @@ test('workers: done needs a Result and a successor; need blocks and tells the le
   assert.match(readFileSync(s.file('r', 'items', 'T02'), 'utf8'), /^state: blocked/m)
 })
 
+test('done --review keeps scratch; done removes it', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'R', '--session', 'someone-else')
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  s.ok('set', 'r', 'T01', 'state=doing')
+  const f = s.file('r', 'items', 'T01')
+  writeFileSync(f, readFileSync(f, 'utf8').replace(/^Done:$/m, 'Done: built').replace(/^Next:$/m, 'Next: none (last item)'))
+  const scratch = join(s.env.CLAUDE_ROOMS_STATE, 'scratch', 'r', 'T01')
+  mkdirSync(scratch, { recursive: true })
+  writeFileSync(join(scratch, 'note.txt'), 'x')
+  s.ok('done', 'r', 'T01', '--review')
+  assert.ok(existsSync(join(scratch, 'note.txt')), 'scratch kept on --review')
+  s.ok('done', 'r', 'T01', '--force')
+  assert.ok(!existsSync(scratch), 'scratch removed on done')
+})
+
 test("the owner's 'D05 b' in chat is recorded before the lead reads it", () => {
   const s = sandbox()
   s.ok('new', 'r', 'R')

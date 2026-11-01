@@ -459,8 +459,11 @@ function cmdDone(a: Args): string {
   it.set('state', state)
   logLine(it, by(), `set state=${state}`)
   it.save()
-  const scratch = scratchDir(r.name, id)
-  if (existsSync(scratch)) rmSync(scratch, { recursive: true, force: true })
+  // Scratch is kept for review (--review); only a finished item sheds it.
+  if (state === 'done') {
+    const scratch = scratchDir(r.name, id)
+    if (existsSync(scratch)) rmSync(scratch, { recursive: true, force: true })
+  }
   changed(r, `${id} ${state}`)
   const told = tellLead(r, `${id} (${it.get('title')}) is ${state}, by ${by()}. Next: ${next}. Read its Result and take the next step.`)
   return `${id}: ${state}; ${told}`
