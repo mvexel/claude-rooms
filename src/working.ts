@@ -197,10 +197,12 @@ export function syncIn(r: Room): string[] {
       else {
         writeFileSync(`${file}.conflict`, mine)
         warn(`${rel} changed on the hub too (${m.clash.join(', ')}); the hub's version stays, yours is in ${file}.conflict`)
+        refresh(file, baseFile, m.text) // reported once: the file follows the hub, so the next poll finds no clash
       }
     } else {
       writeFileSync(`${file}.conflict`, mine)
       warn(`${rel} changed on the hub too; the hub's version stays, yours is in ${file}.conflict`)
+      refresh(file, baseFile, hub)
     }
   }
   // Item copies of this room (workers' and the lead's).
