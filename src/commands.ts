@@ -739,11 +739,13 @@ function cmdSpawn(a: Args): string {
   const tier = c.tiers[tierName] ?? fail(`unknown tier ${tierName} (config tiers: ${Object.keys(c.tiers).join(', ')})`)
   const model = flag(a, 'model') || tier.model
   const effort = flag(a, 'effort') || tier.effort
+  // The repo is --repo, else the room's first repo from BRIEF.md; never the lead's cwd.
+  const repo = flag(a, 'repo') || r.brief.list('repos')[0]
+  let cwd = repo ?? process.cwd()
   // One worktree per agent: the item's own branch off the integration branch.
-  let cwd = flag(a, 'cwd') || process.cwd()
-  const repo = flag(a, 'repo')
   // Research items read; they get no worktree.
-  if (repo && it.get('kind') !== 'research') {
+  if (it.get('kind') !== 'research') {
+    if (!repo) fail(`${id}: ${r.name} has no repo in BRIEF.md; pass --repo <path> (a worker never starts outside its own worktree)`)
     const base = flag(a, 'base') || codeBranch(r) || 'HEAD'
     const wt = workerWorktree(repo, r.name, id)
     cwd = wt.path
