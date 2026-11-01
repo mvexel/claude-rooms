@@ -19,6 +19,7 @@ export type Session = {
   waitingFor?: string // what a 'waiting' session needs, e.g. 'input needed'
   state?: string
   kind?: string
+  startedAt?: number
 }
 
 export function listSessions(all = true): Session[] {

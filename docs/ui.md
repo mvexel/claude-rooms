@@ -28,4 +28,6 @@ The room’s **View plan** disclosure shows every recorded item, including done 
 
 From 960px wide the tabs become a top bar, the inbox gets a rooms column beside the queue, the room view puts work beside the team, then the plan, then the lead’s note beside recent decisions, and sheets open as centred dialogs.
 
+Agents: `lead.agent` and each item's `agent` carry `{session,name,hue,svg}` derived from the session id (src/identity.ts); `GET /api/rooms/<room>/agents/<session>` gives lifecycle, items received/completed and the BRIEF charter; the page route is `#/agent/<room>/<session>`.
+
 Room detail also includes `team_roster` (the brief’s Team section) and `team[{name,items}]`. Team assignments carry item state, optional tier and session state; members without open assignments remain visible. The Team disclosure shows the roster, lead status and linked assignments.

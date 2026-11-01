@@ -7,6 +7,7 @@ import { gzipSync } from 'node:zlib'
 import { Conflict, dueOf, options, recordAnswer, tapAnswer, tapQuestion } from './answer.ts'
 import { roomsHome } from './config.ts'
 import { emit, receipts } from './events.ts'
+import { identity } from './identity.ts'
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
 import { stepParts } from './steps.ts'
@@ -122,6 +123,7 @@ function item(room: Room, i: Record) {
     id: i.get('id'),
     title: i.get('title'),
     owner_name: i.get('owner') || undefined,
+    agent: i.get('agent') ? { session: i.get('agent'), ...identity(i.get('agent')) } : undefined,
     age_min: minutes(i.get('state') === 'doing' ? doingSince(i) || i.get('updated') : i.get('updated')),
     after: i.list('depends_on'),
     waits_on: i.section('Needs').split('\n').filter(Boolean).at(-1)?.replace(/^- \S+ [^:]+: /, ''),
@@ -177,6 +179,7 @@ export function roomDetail(room: Room, st: RoomState, sessions: Session[]) {
     phase: head.get('phase'),
     lead: {
       name: 'lead',
+      agent: room.leadSession() ? { session: room.leadSession(), ...identity(room.leadSession()) } : undefined,
       session: lead?.id ?? (room.leadSession() ? room.leadSession().slice(0, 8) : undefined),
       session_name: lead?.name || undefined,
       state: isRunning(lead ?? room.leadSession(), sessions) ? (lead?.status === 'idle' ? 'idle' : 'working') : room.leadSession() ? (isEnded(lead ?? room.leadSession(), sessions) ? 'finished' : 'working') : 'unreachable',
@@ -216,6 +219,51 @@ export function roomDetail(room: Room, st: RoomState, sessions: Session[]) {
     lead_note: head.preamble.trim() ? { text: head.preamble.trim(), at: head.get('updated') } : undefined,
     attention: st.warnings.filter(w => /overrun|cycle|finished|ended|stuck/i.test(w)).map(w => ({ level: /hard|cycle/.test(w) ? 'loud' : 'warn', sentence: w })),
     paused: room.isPaused() ? { by: 'you', at: room.brief.get('paused') } : undefined,
+  }
+}
+
+// A role's charter: its line in BRIEF.md's Team section.
+function charterOf(room: Room, role: string): string | undefined {
+  const re = new RegExp(`^-\\s*\\**${role.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\**\\s*[:\\-—]\\s*(.*)$`, 'i')
+  const lines = room.brief.section('Team').split('\n')
+  for (let k = 0; k < lines.length; k++) {
+    const m = lines[k].match(re)
+    if (!m) continue
+    const rest = [m[1]]
+    while (lines[k + 1] && /^\s+\S/.test(lines[k + 1])) rest.push(lines[++k].trim())
+    return rest.join(' ')
+  }
+}
+
+const iso = (t: number | undefined) => (t && Number.isFinite(t) ? new Date(t).toISOString() : undefined)
+
+export function agentDetail(room: Room, ref: string, sessions: Session[]) {
+  const found = findSession(ref, sessions)
+  const lead = room.leadSession()
+  const all = room.items()
+  const full = [lead, ...all.map(i => i.get('agent'))].find(s => s && (s === ref || s === found?.sessionId || s.startsWith(ref))) ?? found?.sessionId
+  if (!full) return undefined
+  const isLead = full === lead
+  const mine = all.filter(i => i.get('agent') === full)
+  if (!isLead && !mine.length) return undefined
+  const session = findSession(full, sessions)
+  const role = isLead ? 'lead' : mine.map(i => i.get('owner')).find(Boolean) || undefined
+  const stamps = [...mine.map(i => Date.parse(i.get('updated'))), ...(isLead ? [Date.parse(room.head.get('updated'))] : [])].filter(Number.isFinite)
+  const started = session?.startedAt ?? (stamps.length ? Math.min(...stamps) : undefined)
+  const running = isRunning(session ?? full, sessions), ended = isEnded(session ?? full, sessions)
+  return {
+    room: room.name,
+    session: full,
+    ...identity(full),
+    role,
+    charter: role && !isLead ? charterOf(room, role) : isLead ? charterOf(room, 'lead') : undefined,
+    state: running ? (session?.status === 'idle' ? 'idle' : 'working') : ended ? 'stopped' : 'unknown',
+    started_at: iso(started),
+    last_seen_at: running ? new Date().toISOString() : iso(stamps.length ? Math.max(...stamps) : undefined),
+    stopped: ended || undefined,
+    items: mine.map(i => ({ id: i.get('id'), title: i.get('title'), state: i.get('state') })),
+    received: mine.length,
+    completed: mine.filter(i => i.get('state') === 'done').length,
   }
 }
 
@@ -352,9 +400,13 @@ export async function serve(o: ServeOptions): Promise<void> {
           return send(req, res, 200, { now: new Date().toISOString(), count: cards.length, pulse, alarms, cards, going_ahead: going, waiting_on_team: waiting })
         }
         if (path === '/api/rooms') { const s = states(); return send(req, res, 200, { rooms_home: roomsHome(), rooms: [...s.ok.map(({ room, st }) => summary(room, st)), ...s.down.map(d => ({ name: d.name, title: d.name, status: 'unreachable', sentence: `On the hub, which is unreachable: ${d.error}`, cards: 0 }))] }) }
-        if (parts[0] === 'api' && parts[1] === 'rooms' && parts[2]) {
+        if (parts[0] === 'api' && parts[1] === 'rooms' && parts[2] && parts.length === 3) {
           const room = new Room(parts[2]).must()
           return send(req, res, 200, roomDetail(room, roomState(room, { sessions: fresh() }), fresh()))
+        }
+        if (parts[0] === 'api' && parts[1] === 'rooms' && parts[2] && parts[3] === 'agents' && parts[4]) {
+          const a = agentDetail(new Room(parts[2]).must(), parts[4], fresh())
+          return send(req, res, a ? 200 : 404, a ?? { ok: false, error: 'no such agent in this room' })
         }
         if (parts[0] === 'api' && parts[1] === 'cards' && parts[2] && parts[3]) {
           const room = new Room(parts[2]).must()
