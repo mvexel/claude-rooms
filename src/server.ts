@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { stepParts } from './steps.ts'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -76,7 +77,8 @@ function steps(d: Record) {
     .map(text => {
       const url = text.match(/https?:\/\/\S+/)?.[0]
       const copy = text.match(/`([^`]+)`/)?.[1]
-      return { text, ...(copy ? { copy } : {}), ...(url ? { url } : {}) }
+      const parts = stepParts(text)
+      return { text, parts, ...(copy ? { copy } : {}), ...(url ? { url } : {}) }
     })
 }
 

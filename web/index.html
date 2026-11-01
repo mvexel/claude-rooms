@@ -98,7 +98,10 @@ textarea:focus, input:focus, button:focus-visible { outline:2px solid var(--acce
 .steps li:first-child { border-top:0; }
 .steps input[type=checkbox] { width:22px; height:22px; margin:1px 0 0; flex:none; accent-color:var(--ok); }
 .steps .t { flex:1; min-width:0; font-size:15px; }
-.steps .t::before { content:counter(s) ". "; color:var(--ink-2); }
+.steps .t::before { content:counter(s) "."; color:var(--ink-2); display:block; }
+.steps .t p { margin:4px 0; overflow-wrap:anywhere; }
+.steps .cmd { display:flex; gap:8px; align-items:flex-start; margin:6px 0; background:var(--sunk); border:1px solid var(--line); border-radius:8px; padding:6px 6px 6px 10px; }
+.steps .cmd code { flex:1; min-width:0; background:none; padding:2px 0; font:13px/1.45 ui-monospace,Menlo,monospace; white-space:pre-wrap; overflow-wrap:anywhere; user-select:all; }
 .steps li.done .t { color:var(--ink-2); text-decoration:line-through; }
 .steps code { font:13px ui-monospace,Menlo,monospace; background:var(--sunk); padding:1px 4px; border-radius:4px; overflow-wrap:anywhere; }
 .copy { flex:none; min-height:36px; min-width:56px; border:1px solid var(--line); background:var(--surface); border-radius:8px; font-size:13px; font-weight:600; color:var(--accent); }
@@ -600,12 +603,19 @@ function noteBox(c) {
     oninput: e => setNote(k, e.target.value) }, ui.notes[k] || ""),
     h("small", {}, "Sent with whichever option you tap."));
 }
+function stepBody(s) {
+  const parts = s.parts || [{ kind: "prose", text: s.text }];
+  const out = parts.map(p => p.kind === "cmd"
+    ? h("div", { class: "cmd" }, h("code", {}, p.text), h("button", { class: "copy", "aria-label": "Copy command", onclick: e => copy(p.text, e.target) }, "Copy"))
+    : h("p", {}, p.text));
+  if (s.url && !parts.some(p => p.kind === "cmd")) out.push(h("a", { class: "copy", href: s.url, target: "_blank", rel: "noopener", style: "display:inline-grid;place-items:center;text-decoration:none;margin-top:6px" }, "Open"));
+  return out;
+}
 function todoBody(c, locked) {
   const k = key(c), done = (ui.todo[k] ||= new Set()), steps = c.steps || [];
   const list = h("ol", { class: "steps" }, steps.map((s, i) => h("li", { class: done.has(i) ? "done" : "" },
     h("input", { type: "checkbox", "aria-label": `Step ${i + 1} done`, checked: done.has(i) || null, onchange: e => { e.target.checked ? done.add(i) : done.delete(i); render(); } }),
-    h("span", { class: "t" }, s.text),
-    s.copy ? h("button", { class: "copy", onclick: e => copy(s.copy, e.target) }, "Copy") : s.url ? h("a", { class: "copy", href: s.url, target: "_blank", rel: "noopener", style: "display:inline-grid;place-items:center;text-decoration:none" }, "Open") : null)));
+    h("div", { class: "t" }, stepBody(s)))));
   const doneOpt = (c.options || [])[0] || { key: "a", label: "Done, I did this" };
   const notYet = (c.options || [])[1];
   return h("div", {}, list, noteBox(c), h("div", { class: "row2" },
