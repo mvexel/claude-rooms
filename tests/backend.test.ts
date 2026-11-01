@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { type Backend, useBackend, localBackend, routed } from '../src/backend.ts'
@@ -311,4 +311,90 @@ test('a broken routing setup fails only the routed rooms; local rooms and hooks 
   check('bad json')
   routing(JSON.stringify({ module, rooms: 'nope' }))
   check('bad shape')
+})
+
+test('a worker in a routed room edits a working copy in a git worktree; rooms done takes it to the hub', () => {
+  const base = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'rooms-working-'))
+  const state = join(base, 'state')
+  const hub = join(base, 'hub') // stands in for the hub: the module stores keys as flat files here
+  mkdirSync(hub)
+  const fake = join(base, 'claude')
+  writeFileSync(fake, `#!/bin/sh\ncase "$1" in agents) echo '[]'; exit 0;; esac\necho "$@" > ${join(base, 'args.txt')}\necho "backgrounded · abc123"\n`)
+  chmodSync(fake, 0o755)
+  const mod = join(base, 'hubmod.ts')
+  writeFileSync(
+    mod,
+    `import { localBackend } from ${JSON.stringify(resolve(import.meta.dirname, '..', 'src', 'backend.ts'))}
+const dir = ${JSON.stringify(hub)}
+const flat = (p: string) => p.replace(/[\\\\/]/g, '_')
+const key = (p: string) => dir + '/' + flat(p)
+export default () => ({
+  read: (p: string) => localBackend.read(key(p)),
+  write: (p: string, t: string) => localBackend.write(key(p), t),
+  append: (p: string, t: string) => localBackend.append(key(p), t),
+  exists: (p: string) => localBackend.exists(key(p)),
+  list: (d: string) => localBackend.list(dir).filter(e => e.name.startsWith(flat(d) + '_') && !e.name.slice(flat(d).length + 1).includes('_')).map(e => ({ name: e.name.slice(flat(d).length + 1), dir: false })),
+  remove: (p: string) => localBackend.remove(key(p)),
+  claim: (p: string) => localBackend.claim(key(p)),
+})
+`,
+  )
+  mkdirSync(state)
+  writeFileSync(join(state, 'backend.json'), JSON.stringify({ module: mod, rooms: ['hubbed'] }))
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CLAUDE_ROOMS_HOME: join(base, 'rooms'),
+    CLAUDE_ROOMS_STATE: state,
+    CLAUDE_ROOMS_CONFIG: join(base, 'none.json'),
+    CLAUDE_ROOMS_CLAUDE: fake,
+    ROOMS_AS: 'builder',
+    GIT_AUTHOR_NAME: 't',
+    GIT_AUTHOR_EMAIL: 't@example.invalid',
+    GIT_COMMITTER_NAME: 't',
+    GIT_COMMITTER_EMAIL: 't@example.invalid',
+  }
+  delete env.CLAUDE_ROOMS_BACKEND
+  const rooms = (...args: string[]) => spawnSync(process.execPath, ['--no-warnings', CLI, ...args], { env, encoding: 'utf8' })
+  const ok = (...args: string[]) => {
+    const r = rooms(...args)
+    assert.equal(r.status, 0, r.stderr + r.stdout)
+    return r.stdout
+  }
+  const repo = join(base, 'repo')
+  mkdirSync(repo)
+  spawnSync('git', ['init', '-q', repo])
+  spawnSync('git', ['-C', repo, '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init'], { env })
+  ok('init')
+  ok('new', 'hubbed', 'Hubbed', '--session', 'l2', '--repo', repo)
+  ok('add', 'hubbed', 'Build it', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  ok('spawn', 'hubbed', 'T01', '--repo', repo)
+
+  // the brief hands over a working copy, not a hub key
+  const args = readFileSync(join(base, 'args.txt'), 'utf8')
+  const m = args.match(/Your item: (\S+)/)
+  assert.ok(m, args)
+  const working = m![1]
+  assert.ok(working.startsWith(join(state, 'scratch', 'hubbed', 'T01')), working)
+  assert.ok(existsSync(working))
+  assert.match(readFileSync(working, 'utf8'), /state: doing/)
+  assert.match(args, /working copy/)
+
+  // the worker edits the Result and ticks the acceptance in the copy, then reports
+  writeFileSync(
+    working,
+    readFileSync(working, 'utf8').replace('Done:\n', 'Done: built it\n').replace('Next:', 'Next: none (nothing follows)').replace('- [ ] works', '- [x] works'),
+  )
+  ok('log', 'hubbed', 'T01', 'halfway')
+  assert.match(readFileSync(working, 'utf8'), /halfway/) // the copy is refreshed from the hub
+  assert.match(ok('done', 'hubbed', 'T01'), /T01: done/)
+
+  const hubText = readdirSync(hub)
+    .filter(f => /items_T01/.test(f))
+    .map(f => readFileSync(join(hub, f), 'utf8'))
+    .join('')
+  assert.match(hubText, /state: done/)
+  assert.match(hubText, /Done: built it/)
+  assert.match(hubText, /\[x\] works/)
+  assert.match(hubText, /halfway/)
+  assert.equal(existsSync(join(base, 'rooms', 'hubbed', 'items')), false)
 })

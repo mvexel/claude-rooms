@@ -230,6 +230,13 @@ export async function loadBackend(): Promise<void> {
 // whole plugin hook (see watchdog); both below the plugin's own 20 s.
 export const HUB_TIMEOUT_MS = 8000
 
+// Whether a room's records live behind a module rather than in files on this
+// machine, so a record's path is a key and not something an editor can open.
+export function isRouted(room: string): boolean {
+  if (current === localBackend) return false
+  return !('remote' in current) || (current as RoutedBackend).rooms.has(room)
+}
+
 export function useBackend(b: Backend): void {
   current = b
 }

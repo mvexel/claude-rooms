@@ -10,6 +10,7 @@ import { claudeBin, claudeDir, config, legacyStateDir, roomsHome, scratchDir, st
 import { autocommit, commit, excludeLocal, git, pushInBackground, unwritable, withLock } from './git.ts'
 import { applyUserSandbox, planUserSandbox, sandboxGap } from './sandbox.ts'
 import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } from './events.ts'
+import { findWorkItem, publishWorking } from './working.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
 import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession, WORKER_DISALLOWED_TOOLS } from './sessions.ts'
@@ -413,7 +414,7 @@ function guardStart(r: Room, it: Record, force: boolean): string[] {
 function cmdSet(a: Args): string {
   const [name, id, ...pairs] = a._
   const r = room(name)
-  const rec = id === 'PRD' ? (r.prd() ?? fail('no PRD.md')) : r.find(id ?? fail('id required'))
+  const rec = id === 'PRD' ? (r.prd() ?? fail('no PRD.md')) : findWorkItem(r, id ?? fail('id required'))
   const kv = pairs.map(p => {
     const i = p.indexOf('=')
     if (i < 1) fail(`not key=value: ${p}`)
@@ -428,6 +429,7 @@ function cmdSet(a: Args): string {
   if (rec.sections.some(s => s[0] === 'Log')) logLine(rec, by(), `set ${pairs.join(' ')}`)
   else rec.set('updated', now())
   rec.save()
+  if (id.startsWith('T')) publishWorking(r, rec)
   changed(r, `${id} ${pairs.join(' ')}`)
   return [...warns, `${id}: ${pairs.join(' ')}`].join('\n')
 }
@@ -435,9 +437,10 @@ function cmdSet(a: Args): string {
 function cmdLog(a: Args): string {
   const [name, id, text] = a._
   const r = room(name)
-  const rec = r.find(id ?? fail('id required'))
+  const rec = findWorkItem(r, id ?? fail('id required'))
   logLine(rec, by(), text || fail('text required'))
   rec.save()
+  if (id.startsWith('T')) publishWorking(r, rec)
   changed(r, `${id} log`)
   return `${id}: logged`
 }
@@ -447,7 +450,7 @@ function cmdNeed(a: Args): string {
   const r = room(name)
   refuseClosed(r, 'a need')
   if (!id?.startsWith('T')) fail('a need is on an item (Tnn)')
-  const it = r.find(id)
+  const it = findWorkItem(r, id)
   if (!['doing', 'todo'].includes(it.get('state'))) fail(`${id} is ${it.get('state')}`)
   const text = (raw ?? '').replace(/\s+/g, ' ').trim() || fail('say what is missing and why')
   const needs = flag(a, 'needs')
@@ -457,6 +460,7 @@ function cmdNeed(a: Args): string {
   it.appendTo('Needs', `- ${hhmm()} ${by()}: ${text}${tail}`)
   logLine(it, by(), `need: ${text}${tail}; state=blocked`)
   it.save()
+  publishWorking(r, it)
   changed(r, `${id} blocked`)
   const told = tellLead(r, `${id} (${it.get('title')}) is blocked by ${by()}: ${text}${tail}. Decide now: an existing item first (depends_on), a small new prerequisite inside the PRD, or a scope change (refinement or card). Then flip it back and tell the worker.`)
   return `${id} blocked; ${told}. Stop here and end your turn with this need as your report.`
@@ -466,7 +470,7 @@ function cmdDone(a: Args): string {
   const [name, id] = a._
   const r = room(name)
   if (!id?.startsWith('T')) fail('usage: rooms done <room> <Tnn> [--review]')
-  const it = r.find(id)
+  const it = findWorkItem(r, id)
   const res = it.section('Result')
   const field = (k: string) => (res.match(new RegExp(`^${k}:[ \\t]*(.*)$`, 'm'))?.[1] ?? '').trim()
   if (!field('Done')) fail(`${id}: write the Result first (Done:, Artifacts:, Unverified:, Next:)`)
@@ -728,7 +732,7 @@ function cmdSpawn(a: Args): string {
     changed(r, 'lead session started')
     return `${r.name}: lead session ${s.id} started`
   }
-  const it = r.find(id ?? fail('usage: rooms spawn <room> <Tnn> [--tier light|standard|review] [--repo <path> [--base <branch>]] | --lead'))
+  const it = findWorkItem(r, id ?? fail('usage: rooms spawn <room> <Tnn> [--tier light|standard|review] [--repo <path> [--base <branch>]] | --lead'))
   if (it.get('agent')) {
     const sessions = listSessions()
     const s = findSession(it.get('agent'), sessions)
@@ -762,9 +766,12 @@ function cmdSpawn(a: Args): string {
     fail(unwritable(scratch, e as Error))
   }
   const who = flag(a, 'name') || it.get('owner') || 'worker'
+  // A routed room's item is on the hub; the worker edits a working copy that the commands sync.
+  const itemFile = publishWorking(r, it)
   const prompt = [
     `You are ${who} on item ${id} (${it.get('title')}) in room ${r.name}. Load the rooms:worker skill first.`,
-    `Your item: ${it.path}`,
+    `Your item: ${itemFile}`,
+    itemFile === it.path ? '' : `(${r.name} is on the hub: this is a working copy. Edit it freely; rooms log, set, need and done take your edits to the hub.)`,
     r.prd() ? `Binding set: rooms brief ${r.name}` : '',
     `Scratch: ${scratch} (export TMPDIR=${scratch}; never /tmp). Cap: ${it.get('cap_h') || '?'}h.`,
     `Use ROOMS_AS=${who} for rooms commands. Finish with: write the Result in the item, then rooms done ${r.name} ${id} (or --review). Unplanned work you need: rooms need ${r.name} ${id} "<what and why>", then stop.`,
@@ -777,6 +784,7 @@ function cmdSpawn(a: Args): string {
   it.set('agent', s.sessionId)
   logLine(it, by(), `set state=doing; spawned ${who} (session ${s.id}) in ${cwd}; model: ${model ?? 'default'}, effort: ${effort ?? 'default'}`)
   it.save()
+  publishWorking(r, it)
   changed(r, `${id} spawned`)
   return [...warns, `${id}: ${who} started (session ${s.id}, ${model ?? 'default model'})`].join('\n')
 }
