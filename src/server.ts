@@ -314,15 +314,30 @@ type Caller = { headers: IncomingMessage['headers']; remoteAddress?: string }
 
 // A direct loopback connection with no proxy headers is the local user at the
 // machine; tailscale serve/funnel proxy from loopback too but add headers.
-export function isAllowed(req: Caller, users: string[], readonly = false): boolean {
+export function isAllowed(req: Caller, users: string[], readonly = false, trustLoopback = true): boolean {
   if (readonly) return false
-  if (!users.length) return true
+  if (!users.length) return trustLoopback
   const h = req.headers
   const login = String(h['tailscale-user-login'] ?? '')
   if (login) return users.includes(login)
   const proxied = Object.keys(h).some(k => k === 'x-forwarded-for' || k === 'forwarded' || k.startsWith('tailscale-'))
   const direct = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.remoteAddress ?? '')
-  return direct && !proxied
+  return trustLoopback && direct && !proxied
+}
+
+// A browser sends Origin on cross-site POSTs; it must name the host we were asked on.
+export function crossSite(headers: IncomingMessage['headers']): boolean {
+  const origin = headers.origin
+  if (origin === undefined) return false
+  try {
+    return new URL(String(origin)).host !== String(headers.host ?? '')
+  } catch {
+    return true
+  }
+}
+
+export function notAllowedMessage(host: string | undefined): string {
+  return `not allowed: open this page via the tailnet URL (signed in as a login listed in ROOMS_USERS), or from the machine itself at http://${host || '127.0.0.1'}`
 }
 
 export type ServeOptions = { port: number; host: string }
@@ -332,7 +347,8 @@ export async function serve(o: ServeOptions): Promise<void> {
   const loopback = ['127.0.0.1', 'localhost', '::1'].includes(o.host)
   if (!users.length && !loopback) throw new Error('refusing to listen beyond loopback without ROOMS_USERS (the tailnet logins allowed to answer)')
   const readonly = process.env.ROOMS_READONLY === '1'
-  const allowed = (req: IncomingMessage) => isAllowed({ headers: req.headers, remoteAddress: req.socket.remoteAddress }, users, readonly)
+  const trustLoopback = process.env.ROOMS_TRUST_LOOPBACK !== '0'
+  const allowed = (req: IncomingMessage) => isAllowed({ headers: req.headers, remoteAddress: req.socket.remoteAddress }, users, readonly, trustLoopback)
 
   let sessions: Session[] = listSessions()
   let sessionsAt = Date.now()
@@ -418,8 +434,9 @@ export async function serve(o: ServeOptions): Promise<void> {
         return send(req, res, 404, { ok: false, error: 'not found' })
       }
       if (req.method !== 'POST') return send(req, res, 405, { ok: false, error: 'method' })
-      if (!/json|text\/plain/.test(String(req.headers['content-type'] ?? ''))) return send(req, res, 415, { ok: false, error: 'JSON only' })
-      if (!allowed(req)) return send(req, res, 403, { ok: false, error: readonly ? 'read-only' : 'not allowed: open this page via the tailnet URL (signed in as a login listed in ROOMS_USERS), or from the machine itself at http://127.0.0.1' })
+      if (crossSite(req.headers)) return send(req, res, 403, { ok: false, error: 'cross-site request refused' })
+      if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) return send(req, res, 415, { ok: false, error: 'JSON only' })
+      if (!allowed(req)) return send(req, res, 403, { ok: false, error: readonly ? 'read-only' : notAllowedMessage(req.headers.host) })
       const body = await readJson(req)
       if (parts[0] === 'api' && parts[1] === 'cards' && parts.length === 5) {
         const room = new Room(parts[2]).must()

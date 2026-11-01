@@ -27,6 +27,10 @@ Run `rooms install` in a terminal, not inside Claude Code. Then, at a Claude Cod
 
 Start the page with `rooms serve` and open <http://127.0.0.1:8787/>. Open `claude` in your repo (accept the trust prompt: workers start in worktrees of it) and ask: "Start a room to add a `--json` flag to the export command." The lead takes it from there. The walkthrough is in [Your first room](https://mvexel.github.io/claude-rooms/#first-room).
 
+### Serving beyond the machine
+
+`rooms serve` treats a connection from loopback with no proxy headers as the local user, who may answer even when `ROOMS_USERS` is set. Anything that forwards to loopback without adding headers (`tailscale serve --tcp`, `ssh -R`, `socat`) therefore counts as local. Set `ROOMS_TRUST_LOOPBACK=0` to turn that off; then every POST needs a login listed in `ROOMS_USERS`. POSTs with an `Origin` that doesn't match `Host` are refused (403), and POST bodies must be `application/json`.
+
 ## How it fits together
 
 ```
