@@ -5,8 +5,9 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gzipSync } from 'node:zlib'
 import { Conflict, dueOf, options, recordAnswer, tapAnswer, tapQuestion } from './answer.ts'
-import { roomsHome } from './config.ts'
-import { emit, receipts } from './events.ts'
+import { LEASE_FRESH_MS, checkEffective, claudeBin, configFile, configLayers, mergePatch, overridesFile, roomsHome, saveOverrides, stateDir, validatePatch } from './config.ts'
+import { lastPush } from './git.ts'
+import { emit, leaseFresh, receipts } from './events.ts'
 import { identity } from './identity.ts'
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
@@ -282,6 +283,57 @@ function recordJson(r: Record) {
   }
 }
 
+// ---- settings ---------------------------------------------------------------
+
+// Flatten the effective config to dotted paths, each tagged default or overridden.
+// Lead permissionMode and allowedTools are never editable here (file only).
+const FILE_ONLY = new Set(['lead.permissionMode', 'lead.allowedTools', 'worker.permissionMode'])
+export function settingsFields() {
+  const { defaults, file, overrides, effective } = configLayers()
+  const flat = (o: any, pre = ''): [string, unknown][] =>
+    Object.entries(o ?? {}).flatMap(([k, v]) => (v && typeof v === 'object' && !Array.isArray(v) ? flat(v, `${pre}${k}.`) : [[`${pre}${k}`, v] as [string, unknown]]))
+  const eff = new Map(flat(effective)), def = new Map(flat(defaults)), ov = new Map(flat(overrides)), fl = new Map(flat(file))
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+  return [...eff].map(([key, value]) => {
+    const source = ov.has(key) ? 'overridden' : fl.has(key) && !same(fl.get(key), def.get(key)) ? 'overridden' : 'default'
+    return {
+      key,
+      value,
+      default: def.get(key),
+      source,
+      from: ov.has(key) ? 'page' : source === 'overridden' ? 'config.json' : undefined,
+      editable: !FILE_ONLY.has(key),
+      applies: 'next spawn',
+    }
+  })
+}
+
+let lastSweep: { at: string; ok: boolean; lines: number; error?: string } | undefined
+
+function statusBlock(o: { host: string; port: number; readonly: boolean; users: string[] }, states: { room: Room; st: RoomState }[], sessions: Session[]) {
+  const pulse: { [k: string]: number } = {}
+  for (const { st } of states) pulse[st.status] = (pulse[st.status] ?? 0) + 1
+  const push = lastPush()
+  let version: string | undefined
+  try { version = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).version } catch {}
+  return {
+    rooms_home: roomsHome(),
+    state_dir: stateDir(),
+    config_file: configFile(),
+    overrides_file: overridesFile(),
+    server: { host: o.host, port: o.port, read_only: o.readonly, allowed_users: o.users },
+    pulse,
+    sessions: sessions.filter(s => s.status !== 'ended' && s.state !== 'ended').map(s => ({ id: s.id, name: s.name, cwd: s.cwd, status: s.status, started_at: iso(s.startedAt), age_min: s.startedAt ? Math.max(0, Math.round((Date.now() - s.startedAt) / 60_000)) : undefined })),
+    overrides_error: configLayers().overridesError,
+    lead_leases: states.filter(({ room }) => room.leadSession()).map(({ room }) => ({ room: room.name, fresh: leaseFresh(room) })),
+    lease_fresh_seconds: LEASE_FRESH_MS / 1000,
+    last_sweep: lastSweep,
+    last_push: push ? { at: iso(push.at), ok: push.ok, error: push.error || undefined } : undefined,
+    claude_bin: claudeBin(),
+    plugin_version: version,
+  }
+}
+
 // ---- http -------------------------------------------------------------------
 
 function send(req: IncomingMessage, res: ServerResponse, code: number, body: unknown, type = 'application/json') {
@@ -361,9 +413,12 @@ export async function serve(o: ServeOptions): Promise<void> {
   }
   if (!readonly) setInterval(() => {
     try {
-      for (const line of sweep()) console.log(new Date().toISOString().slice(11, 19), line)
+      const lines = sweep()
+      for (const line of lines) console.log(new Date().toISOString().slice(11, 19), line)
+      lastSweep = { at: new Date().toISOString(), ok: true, lines: lines.length }
     } catch (e) {
       console.error('sweep:', (e as Error).message)
+      lastSweep = { at: new Date().toISOString(), ok: false, lines: 0, error: (e as Error).message }
     }
   }, 15_000)
 
@@ -430,6 +485,11 @@ export async function serve(o: ServeOptions): Promise<void> {
           if (!r) return send(req, res, 404, { ok: false, error: 'no record' })
           return send(req, res, 200, recordJson(r))
         }
+        if (path === '/api/settings') {
+          const s = states()
+          const l = configLayers()
+          return send(req, res, 200, { can_edit: allowed(req), fields: settingsFields(), effective: l.effective, defaults: l.defaults, overrides: l.overrides, status: statusBlock({ host: o.host, port: o.port, readonly, users }, s.ok, fresh()) })
+        }
         if (path === '/api/receipts') return send(req, res, 200, receipts((url.searchParams.get('ids') ?? '').split(',').filter(Boolean)))
         return send(req, res, 404, { ok: false, error: 'not found' })
       }
@@ -438,6 +498,14 @@ export async function serve(o: ServeOptions): Promise<void> {
       if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) return send(req, res, 415, { ok: false, error: 'JSON only' })
       if (!allowed(req)) return send(req, res, 403, { ok: false, error: readonly ? 'read-only' : notAllowedMessage(req.headers.host) })
       const body = await readJson(req)
+      if (path === '/api/settings') {
+        const patch = validatePatch(body)
+        const l = configLayers()
+        const next = mergePatch(l.overrides, patch)
+        checkEffective(next, l.file)
+        saveOverrides(next)
+        return send(req, res, 202, { ok: true, applies: 'next spawn', overrides: next, fields: settingsFields() })
+      }
       if (parts[0] === 'api' && parts[1] === 'cards' && parts.length === 5) {
         const room = new Room(parts[2]).must()
         const id = parts[3]

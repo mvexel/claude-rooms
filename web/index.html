@@ -236,7 +236,7 @@ textarea:focus, input:focus, button:focus-visible { outline:2px solid var(--acce
 
 /* tab bar */
 nav.tabs { position:fixed; left:0; right:0; bottom:0; z-index:10; background:var(--surface); border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom); }
-nav.tabs .in { max-width:560px; margin:0 auto; display:grid; grid-template-columns:repeat(3,1fr); }
+nav.tabs .in { max-width:560px; margin:0 auto; display:grid; grid-template-columns:repeat(4,1fr); }
 nav.tabs a { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; height:var(--tab-h); color:var(--ink-2); text-decoration:none; font-size:12px; font-weight:600; gap:2px; }
 nav.tabs a[aria-current="page"] { color:var(--accent); }
 nav.tabs svg { width:24px; height:24px; }
@@ -267,12 +267,12 @@ dialog::backdrop { background:rgba(0,0,0,.4); }
 @media (min-width: 960px) {
   body { padding-bottom:32px; }
   main { max-width:1180px; padding:calc(var(--tab-h) + 16px) 28px 0; }
-  main[data-view="rooms"], main[data-view="more"] { max-width:760px; }
+  main[data-view="rooms"], main[data-view="more"], main[data-view="settings"] { max-width:760px; }
   .offline { top:var(--tab-h); }
   h1.room-title { top:var(--tab-h); margin:0 -28px 2px; padding:8px 28px 6px; }
   nav.tabs { top:0; bottom:auto; border-top:0; border-bottom:1px solid var(--line); padding-bottom:0; }
   nav.tabs .in { max-width:1180px; padding:0 20px; display:flex; gap:4px; }
-  main[data-view="rooms"] ~ nav.tabs .in, main[data-view="more"] ~ nav.tabs .in { max-width:760px; }
+  main[data-view="rooms"] ~ nav.tabs .in, main[data-view="more"] ~ nav.tabs .in, main[data-view="settings"] ~ nav.tabs .in { max-width:760px; }
   nav.tabs a { flex-direction:row; gap:8px; padding:0 14px; font-size:14px; }
   nav.tabs a[aria-current="page"]::after { content:""; position:absolute; left:10px; right:10px; bottom:-1px; height:2px; background:var(--accent); }
   nav.tabs svg { width:20px; height:20px; }
@@ -389,6 +389,7 @@ async function refresh() {
     const [a, b, c] = routes();
     if (a === "room" && b) S.detail[b] = await getJSON("rooms/" + encodeURIComponent(b));
     if (a === "agent" && b && c) S.agent = await getJSON(`rooms/${encodeURIComponent(b)}/agents/${encodeURIComponent(c)}`);
+    if (a === "settings") S.settings = await getJSON("settings");
     // returned waiting-on-team cards come back when the server lists them again with a reply
     ui.waiting = ui.waiting.filter(w => !(S.inbox.cards || []).some(c => key(c) === key(w) && c.reply_unread));
     S.loadedAt = new Date(); S.offline = false; S.error = "";
@@ -414,6 +415,7 @@ const routes = () => (location.hash.slice(1) || "/").split("/").filter(Boolean).
 addEventListener("hashchange", async () => {
   const [a, b, c] = routes();
   if (a === "agent" && b && c) { try { S.agent = await getJSON(`rooms/${encodeURIComponent(b)}/agents/${encodeURIComponent(c)}`); } catch (e) { S.agent = { error: e.message }; } }
+  if (a === "settings") { try { S.settings = await getJSON("settings"); } catch (e) { toast("Couldn't load settings: " + e.message); } }
   if (a === "room" && b && !S.detail[b]) { render(true); try { S.detail[b] = await getJSON("rooms/" + encodeURIComponent(b)); } catch (e) { toast("Couldn't load the room: " + e.message); } }
   render(true); scrollTo(0, 0);
   if (a === "card" && b && c) openRecord(b, c);
@@ -430,8 +432,8 @@ function render(navigating = false) {
   if (S.offline) off.textContent = S.loadedAt ? `Offline. Showing ${hhmm(S.loadedAt)} data. Retrying.` : `Can't reach the rooms server (${S.error}). Retrying.`;
   app.dataset.view = a || "inbox";
   const keep = anchors(app);
-  app.replaceChildren(a === "rooms" ? roomsView() : a === "room" ? roomView(b) : a === "agent" ? agentView() : a === "more" ? moreView() : inboxView());
-  tabs(a === "rooms" || a === "room" || a === "agent" ? "rooms" : a === "more" ? "more" : "inbox");
+  app.replaceChildren(a === "rooms" ? roomsView() : a === "room" ? roomView(b) : a === "agent" ? agentView() : a === "more" ? moreView() : a === "settings" ? settingsView() : inboxView());
+  tabs(a === "rooms" || a === "room" || a === "agent" ? "rooms" : a === "more" ? "more" : a === "settings" ? "settings" : "inbox");
   restore(app, keep);
   const n = needCount();
   document.title = (n ? `(${n}) ` : "") + "claude-rooms";
@@ -460,8 +462,8 @@ function favicon(n) {
   l.href = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='3' y='6' width='22' height='20' rx='4' fill='none' stroke='%231d5fb0' stroke-width='3'/>${dot}</svg>`;
 }
 function tabs(on) {
-  const ic = { inbox: "M4 4h16v10h-5l-1.5 3h-3L9 14H4z", rooms: "M4 5h7v6H4zM13 5h7v6h-7zM4 13h7v6H4zM13 13h7v6h-7z", more: "M5 12h.01M12 12h.01M19 12h.01" };
-  const t = [["inbox", "#/", "Needs you"], ["rooms", "#/rooms", "Rooms"], ["more", "#/more", "More"]];
+  const ic = { inbox: "M4 4h16v10h-5l-1.5 3h-3L9 14H4z", rooms: "M4 5h7v6H4zM13 5h7v6h-7zM4 13h7v6H4zM13 13h7v6h-7z", more: "M5 12h.01M12 12h.01M19 12h.01", settings: "M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6" };
+  const t = [["inbox", "#/", "Needs you"], ["rooms", "#/rooms", "Rooms"], ["settings", "#/settings", "Settings"], ["more", "#/more", "More"]];
   $("#tabs").replaceChildren(...t.map(([k, href, label]) => {
     const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("aria-hidden", "true");
     s.innerHTML = `<path d="${ic[k]}" fill="none" stroke="currentColor" stroke-width="${k === "more" ? 3.2 : 1.8}" stroke-linecap="round" stroke-linejoin="round"/>`;
@@ -1070,6 +1072,59 @@ function moreView() {
     h("p", { style: "margin:0 0 6px" }, "claude-rooms: agent teams for Claude Code. Each room is a folder of plain markdown records; this page shows what needs you and how each team is doing."),
     S.roomsHome ? h("p", { class: "small", style: "margin:0 0 4px" }, "Rooms home: ", h("code", {}, S.roomsHome)) : null,
     h("p", { class: "small", style: "margin:0" }, S.loadedAt ? `Updated ${hhmm(S.loadedAt)} · refreshes every ${POLL_MS / 1000}s while open` : "Not loaded yet")));
+  return f;
+}
+
+// ---------------------------------------------------------------- settings
+const setVal = v => Array.isArray(v) ? v.join(", ") : v === undefined || v === null ? "" : String(v);
+function nestPatch(key, value) {
+  const parts = key.split("."), out = {}; let o = out;
+  parts.slice(0, -1).forEach(k => { o = o[k] = {}; });
+  o[parts.at(-1)] = value;
+  return out;
+}
+async function saveSetting(key, raw, num) {
+  const value = raw === null ? null : num ? Number(raw) : raw;
+  const r = await postJSON("settings", nestPatch(key, value));
+  if (r.ok) { toast(raw === null ? "Back to the default. Applies to the next spawn." : "Saved. Applies to the next spawn."); S.settings = await getJSON("settings"); render(); }
+  else toast(r.error || "Couldn't save");
+}
+function settingsView() {
+  const f = document.createDocumentFragment(), s = S.settings;
+  f.append(h("h1", {}, "Settings"));
+  if (!s) { f.append(h("div", { class: "note" }, "Loading…")); return f; }
+  f.append(h("div", { class: "sec" }, h("span", {}, "Configuration"), h("span", {}, s.can_edit ? "edits apply to the next spawn" : "read-only")));
+  const rows = s.fields.map(x => {
+    const editable = s.can_edit && x.editable && !Array.isArray(x.value);
+    const isNum = typeof x.default === "number";
+    const input = editable ? h("input", { value: setVal(x.value), "aria-label": x.key, inputmode: isNum ? "numeric" : null, style: "min-width:0;flex:1" }) : h("code", {}, setVal(x.value));
+    return h("div", { class: "setrow", style: "flex-wrap:wrap;gap:6px" },
+      h("span", {}, h("code", {}, x.key), " ", h("span", { class: "pill" + (x.source === "overridden" ? " reply" : "") }, x.source === "overridden" ? (x.from === "page" ? "overridden" : "overridden (config.json)") : "default")),
+      editable ? h("div", { style: "display:flex;gap:6px;flex:1 1 220px" }, input,
+        h("button", { class: "chip", onclick: () => saveSetting(x.key, input.value, isNum) }, "Save"),
+        x.from === "page" ? h("button", { class: "chip", onclick: () => saveSetting(x.key, null, false) }, "Reset") : null) : input,
+      editable ? h("span", { class: "small", style: "flex-basis:100%" }, "Applies to the " + x.applies) : null,
+      !x.editable ? h("span", { class: "small" }, "Edit config.json by hand (privilege setting)") : null);
+  });
+  f.append(h("div", { class: "items" }, rows));
+  const st = s.status || {}, sv = st.server || {};
+  f.append(h("div", { class: "sec" }, h("span", {}, "Status"), h("span", {})));
+  const line = (k, v) => h("p", { class: "small", style: "margin:0 0 4px" }, k + ": ", h("code", {}, v));
+  const pulse = Object.entries(st.pulse || {}).map(([k, n]) => `${n} ${k}`).join(", ") || "no rooms";
+  const ago = t => t ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "never";
+  f.append(h("div", { class: "note" },
+    line("Rooms home", st.rooms_home), line("State dir", st.state_dir), line("Config file", st.config_file), line("Overrides file", st.overrides_file),
+    line("Server", `${sv.host}:${sv.port}${sv.read_only ? " (read-only)" : ""}`),
+    line("Allowed users", (sv.allowed_users || []).join(", ") || "loopback only"),
+    line("Rooms", pulse),
+    st.overrides_error ? h("p", { class: "small", style: "margin:0 0 4px;color:var(--critical)", role: "alert" }, "Overrides: " + st.overrides_error) : null,
+    line("Live sessions", String((st.sessions || []).length)),
+    ...(st.sessions || []).map(x => h("p", { class: "small", style: "margin:0 0 4px 12px" }, `${x.name || x.id} · ${x.status || "?"} · ${x.age_min === undefined ? "age unknown" : x.age_min < 60 ? x.age_min + "m" : Math.floor(x.age_min / 60) + "h"}`)),
+    line("Lead leases", (st.lead_leases || []).map(l => `${l.room} ${l.fresh ? "fresh" : "stale"}`).join(", ") || "none") ,
+    line("Lease counts fresh for", `${st.lease_fresh_seconds}s`),
+    line("Last sweep", st.last_sweep ? `${ago(st.last_sweep.at)} ${st.last_sweep.ok ? "ok" : "failed: " + st.last_sweep.error}` : "none yet"),
+    line("Last push", st.last_push ? `${ago(st.last_push.at)} ${st.last_push.ok ? "ok" : "failed: " + (st.last_push.error || "")}` : "none"),
+    line("Claude binary", st.claude_bin), line("Plugin version", st.plugin_version || "unknown")));
   return f;
 }
 
