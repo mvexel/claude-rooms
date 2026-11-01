@@ -324,7 +324,7 @@ function statusBlock(o: { host: string; port: number; readonly: boolean; users: 
     server: { host: o.host, port: o.port, read_only: o.readonly, allowed_users: o.users },
     pulse,
     sessions: sessions.filter(s => s.status !== 'ended' && s.state !== 'ended').map(s => ({ id: s.id, name: s.name, cwd: s.cwd, status: s.status, started_at: iso(s.startedAt), age_min: s.startedAt ? Math.max(0, Math.round((Date.now() - s.startedAt) / 60_000)) : undefined })),
-    overrides_error: configLayers().overridesError,
+    overrides_error: [configLayers().overridesError, configLayers().fileError].filter(Boolean).join('; ') || undefined,
     lead_leases: states.filter(({ room }) => room.leadSession()).map(({ room }) => ({ room: room.name, fresh: leaseFresh(room) })),
     lease_fresh_seconds: LEASE_FRESH_MS / 1000,
     last_sweep: lastSweep,

@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { hallMonitor } from './monitor.ts'
 import { type Dirent, appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -47,7 +48,7 @@ export function parseArgs(argv: string[], booleans: Set<string>): Args {
   return a
 }
 
-const BOOLEANS = new Set(['yes', 'json', 'force', 'yield', 'brief', 'feature', 'research', 'review', 'premise', 'todo', 'text', 'take', 'lead', 'keep-old', 'help'])
+const BOOLEANS = new Set(['yes', 'json', 'force', 'over-cap', 'yield', 'brief', 'feature', 'research', 'review', 'premise', 'todo', 'text', 'take', 'lead', 'keep-old', 'help'])
 const flag = (a: Args, k: string) => a.flags[k]?.at(-1) ?? ''
 const many = (a: Args, k: string) => a.flags[k] ?? []
 const has = (a: Args, k: string) => k in a.flags
@@ -707,7 +708,12 @@ function cmdStatus(a: Args): { text: string; code: number } {
     const st = s.st
     if (has(a, 'yield') && st.status === 'stuck') stuck = true
     let t = statusText(r, st, has(a, 'brief'))
-    if (has(a, 'yield') && st.dispatchable.length) t += `\n  ${st.dispatchable.join(' ')} ready with no agent: dispatch before you end your turn`
+    const hm = hallMonitor(r, sessions)
+    if (hm.clones.length) t += `\n  hall monitor: too many items wait on one role; clone for ${hm.clones.map(c => `${c.item} (${c.name})`).join(', ')} (${hm.running}/${hm.max} threads; rooms spawn names the clone)`
+    if (hm.queued.length) t += `\n  hall monitor: ${hm.queued.join(' ')} wait for a free thread (${hm.running}/${hm.max})`
+    const dispatch = st.dispatchable.filter(id => !hm.queued.includes(id))
+    if (has(a, 'yield') && hm.queued.length) t += `\n  ${hm.queued.join(' ')} ready but wait for a free thread (${hm.running}/${hm.max}); spawn when one finishes, or --over-cap`
+    if (has(a, 'yield') && dispatch.length) t += `\n  ${dispatch.join(' ')} ready with no agent: dispatch before you end your turn`
     if (has(a, 'yield') && st.status === 'stuck') t += `\n  STUCK if you stop now: dispatch the next item, put a real question to the owner, set waiting:/resume: in now-head.md, or close the room.`
     return t
   })
@@ -756,6 +762,10 @@ function cmdSpawn(a: Args): string {
     if (!isEnded(s ?? it.get('agent'), sessions) && !has(a, 'force')) fail(`${id}'s worker session ${it.get('agent')} may be alive (liveness unknown: sandboxed or session list unavailable); run from outside the sandbox, or --force once you know it ended`)
   }
   const warns = guardStart(r, it, has(a, 'force'))
+  // The thread cap is checked before anything is created.
+  const plan = hallMonitor(r)
+  if (plan.running >= plan.max && !has(a, 'over-cap')) fail(`${r.name} already runs ${plan.running} workers (hallMonitor.maxThreads ${plan.max}); wait for one to finish, raise maxThreads in the config, or --over-cap`)
+  const clone = plan.clones.find(c => c.item === it.get('id'))?.name
   const tierName = flag(a, 'tier') || it.get('tier') || c.worker.tier
   const tier = c.tiers[tierName] ?? fail(`unknown tier ${tierName} (config tiers: ${Object.keys(c.tiers).join(', ')})`)
   const model = flag(a, 'model') || tier.model
@@ -783,7 +793,7 @@ function cmdSpawn(a: Args): string {
   } catch (e) {
     fail(unwritable(scratch, e as Error))
   }
-  const who = flag(a, 'name') || it.get('owner') || 'worker'
+  const who = flag(a, 'name') || clone || it.get('owner') || 'worker'
   // A routed room's item is on the hub; the worker edits a working copy that the commands sync.
   const itemFile = publishWorking(r, it)
   const prompt = [
@@ -800,6 +810,7 @@ function cmdSpawn(a: Args): string {
   const s = startSession({ prompt, cwd, name: `${who} · ${id}`, model, effort, permissionMode: flag(a, 'permission-mode') || c.worker.permissionMode, disallowedTools: WORKER_DISALLOWED_TOOLS })
   it.set('state', 'doing')
   it.set('agent', s.sessionId)
+  if (clone && who === clone) it.set('clone', clone)
   logLine(it, by(), `set state=doing; spawned ${who} (session ${s.id}) in ${cwd}; model: ${model ?? 'default'}, effort: ${effort ?? 'default'}`)
   it.save()
   publishWorking(r, it)

@@ -634,3 +634,57 @@ test('init leaves legacy state alone unless the home is the default ~/rooms', ()
   assert.ok(existsSync(join(fakeHome, 'rooms', '.state', 'rooms', 'r', 'inbox.jsonl')), 'default home migrates')
   assert.ok(!existsSync(legacy), 'legacy removed after complete copy')
 })
+
+test('hall monitor names clones for the excess, records them, and caps threads', () => {
+  const s = sandbox()
+  const dir = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'hm-'))
+  // A fake claude: --bg starts session aaaaaa<n>, and `agents` lists every started one as alive (this test's pid).
+  const fake = join(dir, 'claude')
+  const log = join(dir, 'sessions')
+  writeFileSync(log, '')
+  writeFileSync(fake, `#!/bin/sh
+if [ "$1" = agents ]; then
+  printf '['; sep=''
+  for id in $(cat ${log}); do printf '%s{"id":"%s","sessionId":"%s","pid":${process.pid},"status":"busy"}' "$sep" "$id" "$id"; sep=','; done
+  printf ']'; exit 0
+fi
+n=$(( $(wc -l < ${log}) + 1 )); echo aaaaaa$n >> ${log}; echo "backgrounded · aaaaaa$n"
+`, { mode: 0o755 })
+  s.env.CLAUDE_ROOMS_CLAUDE = fake
+  const cfg = join(dir, 'cfg.json')
+  s.env.CLAUDE_ROOMS_OVERRIDES = join(dir, 'none.json')
+  const run = (config: object, ...args: string[]) => {
+    writeFileSync(cfg, JSON.stringify(config))
+    const r = spawnSync(process.execPath, ['--no-warnings', CLI, ...args], { env: { ...s.env, CLAUDE_ROOMS_CONFIG: cfg }, encoding: 'utf8' })
+    return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() }
+  }
+  s.ok('new', 'r', 'Room', '--repo', s.home)
+  for (const t of ['A', 'B', 'C', 'D', 'E']) s.ok('add', 'r', t, '--owner', 'dev', '--research', '--cap', '1', '--acc', 'x', '--in', 'y')
+  // idle dev takes T01 itself; T02 waits behind it (queueLimit 1); only the excess gets clones
+  assert.match(run({}, 'status', 'r').out, /clone for T03 \(dev 2\), T04 \(dev 3\), T05 \(dev 4\)/)
+  assert.doesNotMatch(run({}, 'status', 'r').out, /T02 \(/)
+  assert.equal(run({}, 'spawn', 'r', 'T01').code, 0)
+  assert.match(run({}, 'status', 'r').out, /clone for T03 \(dev 2\), T04 \(dev 3\), T05 \(dev 4\)/)
+  // spawning a clone records its name, so the next clone is dev 3
+  const sp = run({}, 'spawn', 'r', 'T03')
+  assert.equal(sp.code, 0, sp.err)
+  assert.match(sp.out, /dev 2 started/)
+  assert.match(readFileSync(s.file('r', 'items', 'T03'), 'utf8'), /^clone: dev 2$/m)
+  assert.match(run({}, 'status', 'r').out, /clone for T04 \(dev 3\), T05 \(dev 4\)/)
+  // the cap: refused before the scratch folder exists, unless --over-cap; --force is not enough
+  const scratch = join(s.env.CLAUDE_ROOMS_STATE, 'scratch', 'r', 'T02')
+  const capped = { hallMonitor: { maxThreads: 2 } }
+  const refused = run(capped, 'spawn', 'r', 'T02')
+  assert.notEqual(refused.code, 0)
+  assert.match(refused.err, /hallMonitor\.maxThreads 2/)
+  assert.ok(!existsSync(scratch))
+  assert.notEqual(run(capped, 'spawn', 'r', 'T02', '--force').code, 0)
+  // at the cap, --yield says the items wait for a thread rather than dispatch
+  const y = run(capped, 'status', 'r', '--yield').out
+  assert.match(y, /T02 T04 T05 ready but wait for a free thread \(2\/2\)/)
+  assert.doesNotMatch(y, /dispatch before you end/)
+  assert.equal(run(capped, 'spawn', 'r', 'T02', '--over-cap').code, 0)
+  // a hand-edited maxThreads below 1 is refused: the default stays in force
+  const bad = run({ hallMonitor: { maxThreads: 0 } }, 'status', 'r')
+  assert.match(bad.out, /clone for/)
+})

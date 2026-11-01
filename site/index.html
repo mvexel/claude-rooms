@@ -309,7 +309,8 @@ systemctl --user enable --now claude-rooms</code></pre>
   "worker": { "permissionMode": "auto", "tier": "standard" },
   "lead":   { "permissionMode": "auto", "allowedTools": ["Bash(rooms *)", "Read", "Edit", "Write"] },
   "provisionalMinutes": 60,
-  "commitDebounceMs": 60000
+  "commitDebounceMs": 60000,
+  "hallMonitor": { "maxThreads": 4, "queueLimit": 1 }
 }</code></pre>
 
 <h3>Tiers</h3>
@@ -328,6 +329,7 @@ systemctl --user enable --now claude-rooms</code></pre>
   <li><strong>permissionMode</strong>: workers and one-shot leads run unattended, so a mode that asks for permission leaves them waiting with nobody to answer. Keep one that doesn't prompt, and narrow the lead's <code>allowedTools</code> if you want it to touch less.</li>
   <li><strong>provisionalMinutes</strong>: how long a reversible call waits before it goes ahead (30 at least).</li>
   <li><strong>commitDebounceMs</strong>: how long the sweep waits after a change before it commits the record.</li>
+  <li><strong>hallMonitor</strong>: when more than <code>queueLimit</code> parallel-ready items wait behind one <code>owner</code> role, <code>rooms status</code> names clones for the excess ("dev 2"; the name is recorded on the item at spawn) and <code>rooms spawn</code> starts those items under the clone's name. <code>maxThreads</code> (1 at least) caps running workers per room; <code>rooms spawn</code> refuses beyond it unless <code>--over-cap</code>. Clones are named, not auto-spawned. Both fields are editable on the Settings page and apply to the next spawn.</li>
 </ul>
 
 <h3>Environment</h3>
