@@ -60,6 +60,11 @@ Use `--text` for observations, ride reports, explanations and other prose answer
 even when only the owner can supply them. Reserve `--todo --steps` for an action
 whose completion the owner confirms. Todo cards also accept a note with Done.
 
+Write `--steps` one step per line, each command in backticks (`` `scp a b` ``), prose
+outside them. Each backticked command becomes its own code block with a Copy button
+that copies exactly it; unfenced commands are only guessed at. Don't join commands
+with `&&` or `;` unless they must run as one; give each its own backticks.
+
 - Options are short (under 80 characters, five at most). Reasoning goes in `--why`. Always give your pick and the reason for it.
 - Fill in `--blocks` so the card sorts by what it holds up.
 - A card you no longer need (the plan changed) is taken off with `rooms withdraw <room> <id> "<reason>"`; never answer it yourself.

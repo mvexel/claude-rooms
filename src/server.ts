@@ -9,6 +9,7 @@ import { roomsHome } from './config.ts'
 import { emit, receipts } from './events.ts'
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
+import { stepParts } from './steps.ts'
 import { type Session, findSession, isEnded, isRunning, listSessions } from './sessions.ts'
 import { cardRank, doingSince, isHuman, roomState, tryRoomState, type RoomState, waves } from './state.ts'
 import { closeRoom, setPaused, setTitle, sweep } from './commands.ts'
@@ -76,7 +77,8 @@ function steps(d: Record) {
     .map(text => {
       const url = text.match(/https?:\/\/\S+/)?.[0]
       const copy = text.match(/`([^`]+)`/)?.[1]
-      return { text, ...(copy ? { copy } : {}), ...(url ? { url } : {}) }
+      const parts = stepParts(text)
+      return { text, parts, ...(copy ? { copy } : {}), ...(url ? { url } : {}) }
     })
 }
 
