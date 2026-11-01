@@ -98,7 +98,9 @@ textarea:focus, input:focus, button:focus-visible { outline:2px solid var(--acce
 .steps li:first-child { border-top:0; }
 .steps input[type=checkbox] { width:22px; height:22px; margin:1px 0 0; flex:none; accent-color:var(--ok); }
 .steps .t { flex:1; min-width:0; font-size:15px; }
-.steps .t::before { content:counter(s) "."; color:var(--ink-2); display:block; }
+.steps li::before { content:counter(s) "."; flex:none; order:1; min-width:1.5em; color:var(--ink-2); }
+.steps input[type=checkbox] { order:0; }
+.steps .t { order:2; }
 .steps .t p { margin:4px 0; overflow-wrap:anywhere; }
 .steps .cmd { display:flex; gap:8px; align-items:flex-start; margin:6px 0; background:var(--sunk); border:1px solid var(--line); border-radius:8px; padding:6px 6px 6px 10px; }
 .steps .cmd code { flex:1; min-width:0; background:none; padding:2px 0; font:13px/1.45 ui-monospace,Menlo,monospace; white-space:pre-wrap; overflow-wrap:anywhere; user-select:all; }
@@ -604,10 +606,17 @@ function noteBox(c) {
     h("small", {}, "Sent with whichever option you tap."));
 }
 function stepBody(s) {
-  const parts = s.parts || [{ kind: "prose", text: s.text }];
-  const out = parts.map(p => p.kind === "cmd"
-    ? h("div", { class: "cmd" }, h("code", {}, p.text), h("button", { class: "copy", "aria-label": "Copy command", onclick: e => copy(p.text, e.target) }, "Copy"))
-    : h("p", {}, p.text));
+  const parts = s.parts || [{ kind: "prose", text: s.text }], out = [];
+  let run = null;   // prose and inline code share one paragraph
+  for (const p of parts) {
+    if (p.kind === "cmd") {
+      run = null;
+      out.push(h("div", { class: "cmd" }, h("code", {}, p.text), h("button", { class: "copy", "aria-label": "Copy command", onclick: e => copy(p.text, e.target) }, "Copy")));
+    } else {
+      if (!run) out.push(run = h("p", {}));
+      run.append(p.kind === "code" ? h("code", {}, p.text) : p.text);
+    }
+  }
   if (s.url && !parts.some(p => p.kind === "cmd")) out.push(h("a", { class: "copy", href: s.url, target: "_blank", rel: "noopener", style: "display:inline-grid;place-items:center;text-decoration:none;margin-top:6px" }, "Open"));
   return out;
 }

@@ -23,3 +23,29 @@ test('backticks and fences are always commands', () => {
 test('plain prose stays prose', () => {
   assert.deepEqual(stepParts('Ride the loop and report'), [{ kind: 'prose', text: 'Ride the loop and report' }])
 })
+
+test('F1: backticked identifiers stay inline in the sentence', () => {
+  const p = stepParts('Edit `config.json` and set `port` to 9000')
+  assert.deepEqual(p.filter(x => x.kind === 'cmd'), [])
+  assert.deepEqual(p.filter(x => x.kind === 'code').map(x => x.text), ['config.json', 'port'])
+})
+
+test('F2: English prose after a colon is not a command', () => {
+  assert.deepEqual(cmds('Before you go: make sure the Mac is awake'), [])
+  assert.deepEqual(cmds('Note: open the hub page and log in'), [])
+  assert.deepEqual(cmds('Run: export A=1'), ['export A=1'])
+})
+
+test('F3: copied command is exactly what was written', () => {
+  assert.deepEqual(cmds('In the repo: cp ~/x .'), ['cp ~/x .'])
+  assert.deepEqual(cmds('Step: git commit -m "Fix it. Then push" — then wait'), ['git commit -m "Fix it. Then push"'])
+  assert.deepEqual(cmds('Go: cd src/.'), ['cd src/'])
+})
+
+test('F4: a && / ; chain stays one block', () => {
+  assert.deepEqual(cmds('Run: npm test; npm run build'), ['npm test; npm run build'])
+})
+
+test('F5: backslash continuation stays one block', () => {
+  assert.deepEqual(cmds('Do:\n```sh\nexport A=1 \\\nB=2\nls\n```'), ['export A=1 \\\nB=2', 'ls'])
+})
