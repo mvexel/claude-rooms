@@ -14,10 +14,10 @@ import { beat, dispatch, emit, mailKey, render, take, tellSession, tellWorker } 
 import { editDir, editPath, findWorkItem, publishWorking, syncIn, syncOut } from './working.ts'
 import { Record, hhmm, now } from './record.ts'
 import { ITEM_STATES, OPEN_ITEM, Room, by, logLine } from './room.ts'
-import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession, WORKER_DISALLOWED_TOOLS } from './sessions.ts'
+import { currentSessionId, findSession, isEnded, isRunning, listSessions, liveness, startSession, untrustedFolder, WORKER_DISALLOWED_TOOLS } from './sessions.ts'
 import { isHuman, roomState, tryRoomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
-import { repositoryIdentity, repositoryRoot, workerWorktree } from './repositories.ts'
+import { mainRepositoryRoot, repositoryIdentity, repositoryRoot, workerWorktree } from './repositories.ts'
 import { BACKENDS, workerOf } from './workers.ts'
 import { codexInstructions, codexTell, isCodex, reconcileCodex, runCodex, specFor, newRun, launchCodex } from './codex.ts'
 import { pruneCandidates, pruneRoom } from './prune.ts'
@@ -747,6 +747,14 @@ function sessionArg(a: Args): string {
 
 // ---- sessions --------------------------------------------------------------
 
+// Claude refuses to start in an untrusted folder; say so before anything is made.
+// A worktree shares its main repository's trust, so trusting the repo is the fix.
+function refuseUntrusted(id: string, cwd: string, repo?: string): void {
+  const root = repo ? mainRepositoryRoot(repo) : undefined
+  const bad = untrustedFolder(cwd, root)
+  if (bad) fail(`${id}: claude would stop at "Workspace not trusted" in ${bad}; open \`claude\` once in ${root ?? bad}, accept the trust prompt, then spawn again`)
+}
+
 function cmdSpawn(a: Args): string {
   const [name, id] = a._
   const r = room(name)
@@ -793,6 +801,7 @@ function cmdSpawn(a: Args): string {
     const base = flag(a, 'base') || codeBranch(r) || 'HEAD'
     const wt = workerWorktree(repo, r.name, id)
     cwd = wt.path
+    if (!codex) refuseUntrusted(id, cwd, repo) // before the worktree exists: a refusal leaves nothing behind
     const branch = wt.branch
     if (!existsSync(cwd)) {
       const w = spawnSync('git', ['-C', repo, 'worktree', 'add', cwd, '-b', branch, base], { encoding: 'utf8' })
@@ -800,7 +809,7 @@ function cmdSpawn(a: Args): string {
     }
     const line = `- Worktree: ${cwd} (branch ${branch} from ${base})`
     if (!it.section('Inputs').includes(line)) it.appendTo('Inputs', line)
-  }
+  } else if (!codex) refuseUntrusted(id, cwd, repo)
   const scratch = scratchDir(r.name, id)
   try {
     mkdirSync(scratch, { recursive: true })
@@ -818,6 +827,7 @@ function cmdSpawn(a: Args): string {
     codex ? `Acceptance:\n${it.section('Acceptance')}\n\nInputs:\n${it.section('Inputs')}\n` : '',
     codex && r.prd() ? `${cmdBinding(r)}\n` : '',
     `Scratch: ${scratch} (export TMPDIR=${scratch}; never /tmp). Cap: ${it.get('cap_h') || '?'}h.`,
+    codex ? '' : 'You already run in your own worktree: do not call EnterWorktree (it is disabled for you); edit here.',
     `Use ROOMS_AS=${who} for rooms commands. Finish with: write the Result in the item, then rooms done ${r.name} ${id} (or --review). Unplanned work you need: rooms need ${r.name} ${id} "<what and why>", then stop.`,
     codex ? codexInstructions(r.name, id, who) : '',
     flag(a, 'brief'),

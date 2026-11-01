@@ -4,6 +4,6 @@
   "type": "module",
   "engines": { "node": ">=24" },
   "scripts": {
-    "test": "node --no-warnings --test 'tests/*.test.ts'"
+    "test": "node --no-warnings --import ./tests/support/isolate.ts --test 'tests/*.test.ts'"
   }
 }
