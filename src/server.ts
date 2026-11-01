@@ -5,10 +5,13 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gzipSync } from 'node:zlib'
 import { Conflict, dueOf, options, recordAnswer, tapAnswer, tapQuestion } from './answer.ts'
-import { roomsHome } from './config.ts'
-import { emit, receipts } from './events.ts'
+import { LEASE_FRESH_MS, checkEffective, claudeBin, configFile, configLayers, mergePatch, overridesFile, roomsHome, saveOverrides, stateDir, validatePatch } from './config.ts'
+import { lastPush } from './git.ts'
+import { emit, leaseFresh, receipts } from './events.ts'
+import { identity } from './identity.ts'
 import { Record } from './record.ts'
 import { OPEN_ITEM, Room } from './room.ts'
+import { stepParts } from './steps.ts'
 import { type Session, findSession, isEnded, isRunning, listSessions } from './sessions.ts'
 import { cardRank, doingSince, isHuman, roomState, tryRoomState, type RoomState, waves } from './state.ts'
 import { closeRoom, setPaused, setTitle, sweep } from './commands.ts'
@@ -76,7 +79,8 @@ function steps(d: Record) {
     .map(text => {
       const url = text.match(/https?:\/\/\S+/)?.[0]
       const copy = text.match(/`([^`]+)`/)?.[1]
-      return { text, ...(copy ? { copy } : {}), ...(url ? { url } : {}) }
+      const parts = stepParts(text)
+      return { text, parts, ...(copy ? { copy } : {}), ...(url ? { url } : {}) }
     })
 }
 
@@ -120,6 +124,7 @@ function item(room: Room, i: Record) {
     id: i.get('id'),
     title: i.get('title'),
     owner_name: i.get('owner') || undefined,
+    agent: i.get('agent') ? { session: i.get('agent'), ...identity(i.get('agent')) } : undefined,
     age_min: minutes(i.get('state') === 'doing' ? doingSince(i) || i.get('updated') : i.get('updated')),
     after: i.list('depends_on'),
     waits_on: i.section('Needs').split('\n').filter(Boolean).at(-1)?.replace(/^- \S+ [^:]+: /, ''),
@@ -175,6 +180,7 @@ export function roomDetail(room: Room, st: RoomState, sessions: Session[]) {
     phase: head.get('phase'),
     lead: {
       name: 'lead',
+      agent: room.leadSession() ? { session: room.leadSession(), ...identity(room.leadSession()) } : undefined,
       session: lead?.id ?? (room.leadSession() ? room.leadSession().slice(0, 8) : undefined),
       session_name: lead?.name || undefined,
       state: isRunning(lead ?? room.leadSession(), sessions) ? (lead?.status === 'idle' ? 'idle' : 'working') : room.leadSession() ? (isEnded(lead ?? room.leadSession(), sessions) ? 'finished' : 'working') : 'unreachable',
@@ -217,6 +223,51 @@ export function roomDetail(room: Room, st: RoomState, sessions: Session[]) {
   }
 }
 
+// A role's charter: its line in BRIEF.md's Team section.
+function charterOf(room: Room, role: string): string | undefined {
+  const re = new RegExp(`^-\\s*\\**${role.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\**\\s*[:\\-—]\\s*(.*)$`, 'i')
+  const lines = room.brief.section('Team').split('\n')
+  for (let k = 0; k < lines.length; k++) {
+    const m = lines[k].match(re)
+    if (!m) continue
+    const rest = [m[1]]
+    while (lines[k + 1] && /^\s+\S/.test(lines[k + 1])) rest.push(lines[++k].trim())
+    return rest.join(' ')
+  }
+}
+
+const iso = (t: number | undefined) => (t && Number.isFinite(t) ? new Date(t).toISOString() : undefined)
+
+export function agentDetail(room: Room, ref: string, sessions: Session[]) {
+  const found = findSession(ref, sessions)
+  const lead = room.leadSession()
+  const all = room.items()
+  const full = [lead, ...all.map(i => i.get('agent'))].find(s => s && (s === ref || s === found?.sessionId || s.startsWith(ref))) ?? found?.sessionId
+  if (!full) return undefined
+  const isLead = full === lead
+  const mine = all.filter(i => i.get('agent') === full)
+  if (!isLead && !mine.length) return undefined
+  const session = findSession(full, sessions)
+  const role = isLead ? 'lead' : mine.map(i => i.get('owner')).find(Boolean) || undefined
+  const stamps = [...mine.map(i => Date.parse(i.get('updated'))), ...(isLead ? [Date.parse(room.head.get('updated'))] : [])].filter(Number.isFinite)
+  const started = session?.startedAt ?? (stamps.length ? Math.min(...stamps) : undefined)
+  const running = isRunning(session ?? full, sessions), ended = isEnded(session ?? full, sessions)
+  return {
+    room: room.name,
+    session: full,
+    ...identity(full),
+    role,
+    charter: role && !isLead ? charterOf(room, role) : isLead ? charterOf(room, 'lead') : undefined,
+    state: running ? (session?.status === 'idle' ? 'idle' : 'working') : ended ? 'stopped' : 'unknown',
+    started_at: iso(started),
+    last_seen_at: running ? new Date().toISOString() : iso(stamps.length ? Math.max(...stamps) : undefined),
+    stopped: ended || undefined,
+    items: mine.map(i => ({ id: i.get('id'), title: i.get('title'), state: i.get('state') })),
+    received: mine.length,
+    completed: mine.filter(i => i.get('state') === 'done').length,
+  }
+}
+
 function recordJson(r: Record) {
   return {
     id: r.get('id'),
@@ -229,6 +280,57 @@ function recordJson(r: Record) {
     history: r.section('Log').split('\n').filter(Boolean),
     sections: r.sections.filter(s => s[1].trim()).map(([h, text]) => ({ h, text: text.trim() })),
     file: basename(r.path),
+  }
+}
+
+// ---- settings ---------------------------------------------------------------
+
+// Flatten the effective config to dotted paths, each tagged default or overridden.
+// Lead permissionMode and allowedTools are never editable here (file only).
+const FILE_ONLY = new Set(['lead.permissionMode', 'lead.allowedTools', 'worker.permissionMode'])
+export function settingsFields() {
+  const { defaults, file, overrides, effective } = configLayers()
+  const flat = (o: any, pre = ''): [string, unknown][] =>
+    Object.entries(o ?? {}).flatMap(([k, v]) => (v && typeof v === 'object' && !Array.isArray(v) ? flat(v, `${pre}${k}.`) : [[`${pre}${k}`, v] as [string, unknown]]))
+  const eff = new Map(flat(effective)), def = new Map(flat(defaults)), ov = new Map(flat(overrides)), fl = new Map(flat(file))
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+  return [...eff].map(([key, value]) => {
+    const source = ov.has(key) ? 'overridden' : fl.has(key) && !same(fl.get(key), def.get(key)) ? 'overridden' : 'default'
+    return {
+      key,
+      value,
+      default: def.get(key),
+      source,
+      from: ov.has(key) ? 'page' : source === 'overridden' ? 'config.json' : undefined,
+      editable: !FILE_ONLY.has(key),
+      applies: 'next spawn',
+    }
+  })
+}
+
+let lastSweep: { at: string; ok: boolean; lines: number; error?: string } | undefined
+
+function statusBlock(o: { host: string; port: number; readonly: boolean; users: string[] }, states: { room: Room; st: RoomState }[], sessions: Session[]) {
+  const pulse: { [k: string]: number } = {}
+  for (const { st } of states) pulse[st.status] = (pulse[st.status] ?? 0) + 1
+  const push = lastPush()
+  let version: string | undefined
+  try { version = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).version } catch {}
+  return {
+    rooms_home: roomsHome(),
+    state_dir: stateDir(),
+    config_file: configFile(),
+    overrides_file: overridesFile(),
+    server: { host: o.host, port: o.port, read_only: o.readonly, allowed_users: o.users },
+    pulse,
+    sessions: sessions.filter(s => s.status !== 'ended' && s.state !== 'ended').map(s => ({ id: s.id, name: s.name, cwd: s.cwd, status: s.status, started_at: iso(s.startedAt), age_min: s.startedAt ? Math.max(0, Math.round((Date.now() - s.startedAt) / 60_000)) : undefined })),
+    overrides_error: configLayers().overridesError,
+    lead_leases: states.filter(({ room }) => room.leadSession()).map(({ room }) => ({ room: room.name, fresh: leaseFresh(room) })),
+    lease_fresh_seconds: LEASE_FRESH_MS / 1000,
+    last_sweep: lastSweep,
+    last_push: push ? { at: iso(push.at), ok: push.ok, error: push.error || undefined } : undefined,
+    claude_bin: claudeBin(),
+    plugin_version: version,
   }
 }
 
@@ -260,6 +362,36 @@ async function readJson(req: IncomingMessage): Promise<any> {
   return JSON.parse(raw || '{}')
 }
 
+type Caller = { headers: IncomingMessage['headers']; remoteAddress?: string }
+
+// A direct loopback connection with no proxy headers is the local user at the
+// machine; tailscale serve/funnel proxy from loopback too but add headers.
+export function isAllowed(req: Caller, users: string[], readonly = false, trustLoopback = true): boolean {
+  if (readonly) return false
+  if (!users.length) return trustLoopback
+  const h = req.headers
+  const login = String(h['tailscale-user-login'] ?? '')
+  if (login) return users.includes(login)
+  const proxied = Object.keys(h).some(k => k === 'x-forwarded-for' || k === 'forwarded' || k.startsWith('tailscale-'))
+  const direct = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.remoteAddress ?? '')
+  return trustLoopback && direct && !proxied
+}
+
+// A browser sends Origin on cross-site POSTs; it must name the host we were asked on.
+export function crossSite(headers: IncomingMessage['headers']): boolean {
+  const origin = headers.origin
+  if (origin === undefined) return false
+  try {
+    return new URL(String(origin)).host !== String(headers.host ?? '')
+  } catch {
+    return true
+  }
+}
+
+export function notAllowedMessage(host: string | undefined): string {
+  return `not allowed: open this page via the tailnet URL (signed in as a login listed in ROOMS_USERS), or from the machine itself at http://${host || '127.0.0.1'}`
+}
+
 export type ServeOptions = { port: number; host: string }
 
 export async function serve(o: ServeOptions): Promise<void> {
@@ -267,7 +399,8 @@ export async function serve(o: ServeOptions): Promise<void> {
   const loopback = ['127.0.0.1', 'localhost', '::1'].includes(o.host)
   if (!users.length && !loopback) throw new Error('refusing to listen beyond loopback without ROOMS_USERS (the tailnet logins allowed to answer)')
   const readonly = process.env.ROOMS_READONLY === '1'
-  const allowed = (req: IncomingMessage) => !readonly && (!users.length || users.includes(String(req.headers['tailscale-user-login'] ?? '')))
+  const trustLoopback = process.env.ROOMS_TRUST_LOOPBACK !== '0'
+  const allowed = (req: IncomingMessage) => isAllowed({ headers: req.headers, remoteAddress: req.socket.remoteAddress }, users, readonly, trustLoopback)
 
   let sessions: Session[] = listSessions()
   let sessionsAt = Date.now()
@@ -280,9 +413,12 @@ export async function serve(o: ServeOptions): Promise<void> {
   }
   if (!readonly) setInterval(() => {
     try {
-      for (const line of sweep()) console.log(new Date().toISOString().slice(11, 19), line)
+      const lines = sweep()
+      for (const line of lines) console.log(new Date().toISOString().slice(11, 19), line)
+      lastSweep = { at: new Date().toISOString(), ok: true, lines: lines.length }
     } catch (e) {
       console.error('sweep:', (e as Error).message)
+      lastSweep = { at: new Date().toISOString(), ok: false, lines: 0, error: (e as Error).message }
     }
   }, 15_000)
 
@@ -335,9 +471,13 @@ export async function serve(o: ServeOptions): Promise<void> {
           return send(req, res, 200, { now: new Date().toISOString(), count: cards.length, pulse, alarms, cards, going_ahead: going, waiting_on_team: waiting })
         }
         if (path === '/api/rooms') { const s = states(); return send(req, res, 200, { rooms_home: roomsHome(), rooms: [...s.ok.map(({ room, st }) => summary(room, st)), ...s.down.map(d => ({ name: d.name, title: d.name, status: 'unreachable', sentence: `On the hub, which is unreachable: ${d.error}`, cards: 0 }))] }) }
-        if (parts[0] === 'api' && parts[1] === 'rooms' && parts[2]) {
+        if (parts[0] === 'api' && parts[1] === 'rooms' && parts[2] && parts.length === 3) {
           const room = new Room(parts[2]).must()
           return send(req, res, 200, roomDetail(room, roomState(room, { sessions: fresh() }), fresh()))
+        }
+        if (parts[0] === 'api' && parts[1] === 'rooms' && parts[2] && parts[3] === 'agents' && parts[4]) {
+          const a = agentDetail(new Room(parts[2]).must(), parts[4], fresh())
+          return send(req, res, a ? 200 : 404, a ?? { ok: false, error: 'no such agent in this room' })
         }
         if (parts[0] === 'api' && parts[1] === 'cards' && parts[2] && parts[3]) {
           const room = new Room(parts[2]).must()
@@ -345,13 +485,27 @@ export async function serve(o: ServeOptions): Promise<void> {
           if (!r) return send(req, res, 404, { ok: false, error: 'no record' })
           return send(req, res, 200, recordJson(r))
         }
+        if (path === '/api/settings') {
+          const s = states()
+          const l = configLayers()
+          return send(req, res, 200, { can_edit: allowed(req), fields: settingsFields(), effective: l.effective, defaults: l.defaults, overrides: l.overrides, status: statusBlock({ host: o.host, port: o.port, readonly, users }, s.ok, fresh()) })
+        }
         if (path === '/api/receipts') return send(req, res, 200, receipts((url.searchParams.get('ids') ?? '').split(',').filter(Boolean)))
         return send(req, res, 404, { ok: false, error: 'not found' })
       }
       if (req.method !== 'POST') return send(req, res, 405, { ok: false, error: 'method' })
-      if (!/json|text\/plain/.test(String(req.headers['content-type'] ?? ''))) return send(req, res, 415, { ok: false, error: 'JSON only' })
-      if (!allowed(req)) return send(req, res, 403, { ok: false, error: 'not allowed' })
+      if (crossSite(req.headers)) return send(req, res, 403, { ok: false, error: 'cross-site request refused' })
+      if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) return send(req, res, 415, { ok: false, error: 'JSON only' })
+      if (!allowed(req)) return send(req, res, 403, { ok: false, error: readonly ? 'read-only' : notAllowedMessage(req.headers.host) })
       const body = await readJson(req)
+      if (path === '/api/settings') {
+        const patch = validatePatch(body)
+        const l = configLayers()
+        const next = mergePatch(l.overrides, patch)
+        checkEffective(next, l.file)
+        saveOverrides(next)
+        return send(req, res, 202, { ok: true, applies: 'next spawn', overrides: next, fields: settingsFields() })
+      }
       if (parts[0] === 'api' && parts[1] === 'cards' && parts.length === 5) {
         const room = new Room(parts[2]).must()
         const id = parts[3]

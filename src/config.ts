@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 // Where things live. Room records are a git repo of their own (ROOMS_HOME),
 // separate from this code, so the plugin can be shared without anyone's rooms.
@@ -59,19 +59,186 @@ const DEFAULTS: Config = {
   commitDebounceMs: 60_000,
 }
 
-let cached: Config | undefined
+// Page edits go to a separate overrides file, loaded after config.json, so a
+// hand-edited config.json is never rewritten. Only the keys in EDITABLE can be
+// overridden; the lead's permissionMode and allowedTools stay file-only.
+export function configFile(): string {
+  return process.env.CLAUDE_ROOMS_CONFIG || join(homedir(), '.config', 'claude-rooms', 'config.json')
+}
+export function overridesFile(): string {
+  return process.env.CLAUDE_ROOMS_OVERRIDES || join(dirname(configFile()), 'overrides.json')
+}
 
-export function config(): Config {
-  if (cached) return cached
-  const file = process.env.CLAUDE_ROOMS_CONFIG || join(homedir(), '.config', 'claude-rooms', 'config.json')
-  let user: Partial<Config> = {}
-  if (existsSync(file)) user = JSON.parse(readFileSync(file, 'utf8'))
-  cached = {
+export type Overrides = {
+  tiers?: { [name: string]: Tier }
+  worker?: { tier?: string }
+  lead?: { model?: string }
+  provisionalMinutes?: number
+  commitDebounceMs?: number
+}
+
+const isObj = (v: unknown): v is { [k: string]: unknown } => !!v && typeof v === 'object' && !Array.isArray(v)
+const nonEmpty = (v: unknown, what: string, flagSafe = false): string => {
+  if (typeof v !== 'string' || !v.trim() || /[\r\n]/.test(v) || v.length > 200) throw new Error(`${what} must be a non-empty single-line string`)
+  // These become command-line values; a leading '-' would read as a flag.
+  if (flagSafe && v.trim().startsWith('-')) throw new Error(`${what} must not start with '-'`)
+  return v.trim()
+}
+const num = (v: unknown, what: string, min: number): number => {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > 10_000_000) throw new Error(`${what} must be a whole number of at least ${min}`)
+  return v
+}
+
+// A patch is a partial Overrides; null clears a key. Returns the cleaned patch
+// or throws with what is wrong. Unknown keys are refused, not dropped.
+export function validatePatch(patch: unknown): { [k: string]: any } {
+  if (!isObj(patch)) throw new Error('body must be a JSON object')
+  const out: { [k: string]: any } = {}
+  for (const [k, v] of Object.entries(patch)) {
+    if (k === 'provisionalMinutes') out[k] = v === null ? null : num(v, k, 30)
+    else if (k === 'commitDebounceMs') out[k] = v === null ? null : num(v, k, 0)
+    else if (k === 'tiers') {
+      if (v === null) { out.tiers = null; continue }
+      if (!isObj(v)) throw new Error('tiers must be an object')
+      out.tiers = {}
+      for (const [name, t] of Object.entries(v)) {
+        if (!/^[a-z][a-z0-9_-]{0,31}$/i.test(name)) throw new Error(`tier name '${name}' is not valid`)
+        if (t === null) { out.tiers[name] = null; continue }
+        if (!isObj(t)) throw new Error(`tiers.${name} must be an object`)
+        out.tiers[name] = {}
+        for (const [f, x] of Object.entries(t)) {
+          if (f !== 'model' && f !== 'effort') throw new Error(`tiers.${name}.${f} cannot be set here`)
+          out.tiers[name][f] = x === null ? null : nonEmpty(x, `tiers.${name}.${f}`, true)
+        }
+      }
+    } else if (k === 'worker') {
+      if (v === null) { out.worker = null; continue }
+      if (!isObj(v)) throw new Error('worker must be an object')
+      out.worker = {}
+      for (const [f, x] of Object.entries(v)) {
+        if (f === 'permissionMode') throw new Error('worker.permissionMode is read-only here; edit config.json by hand')
+        if (f !== 'tier') throw new Error(`worker.${f} cannot be set here`)
+        out.worker[f] = x === null ? null : nonEmpty(x, 'worker.tier')
+      }
+    } else if (k === 'lead') {
+      if (v === null) { out.lead = null; continue }
+      if (!isObj(v)) throw new Error('lead must be an object')
+      out.lead = {}
+      for (const [f, x] of Object.entries(v)) {
+        if (f !== 'model') throw new Error(`lead.${f} is read-only here; edit config.json by hand`)
+        out.lead[f] = x === null ? null : nonEmpty(x, 'lead.model', true)
+      }
+    } else throw new Error(`'${k}' cannot be set here`)
+  }
+  return out
+}
+
+// Merge a patch into the saved overrides (null deletes), dropping empties.
+export function mergePatch(base: Overrides, patch: { [k: string]: any }): Overrides {
+  const out: any = JSON.parse(JSON.stringify(base))
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null) delete out[k]
+    else if (isObj(v) && k === 'tiers') {
+      out.tiers ??= {}
+      for (const [name, t] of Object.entries(v)) {
+        if (t === null) delete out.tiers[name]
+        else {
+          out.tiers[name] = { ...out.tiers[name] }
+          for (const [f, x] of Object.entries(t as object)) x === null ? delete out.tiers[name][f] : (out.tiers[name][f] = x)
+          if (!Object.keys(out.tiers[name]).length) delete out.tiers[name]
+        }
+      }
+    } else if (isObj(v)) {
+      out[k] = { ...out[k] }
+      for (const [f, x] of Object.entries(v)) x === null ? delete out[k][f] : (out[k][f] = x)
+    } else out[k] = v
+    if (isObj(out[k]) && !Object.keys(out[k]).length) delete out[k]
+  }
+  return out
+}
+
+// Cross-field check on the merged result: the worker default tier must exist.
+export function checkEffective(o: Overrides, user: Partial<Config>): void {
+  const m = merge(user, o)
+  if (!m.tiers[m.worker.tier]) throw new Error(`worker.tier '${m.worker.tier}' is not a defined tier`)
+}
+
+export function saveOverrides(o: Overrides): void {
+  const file = overridesFile()
+  mkdirSync(dirname(file), { recursive: true })
+  const tmp = `${file}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(o, null, 2) + '\n')
+  renameSync(tmp, file)
+}
+
+function readJsonFile(file: string): any {
+  if (!existsSync(file)) return {}
+  const v = JSON.parse(readFileSync(file, 'utf8'))
+  return isObj(v) ? v : {}
+}
+
+// Keep only what the page may override, so a hand-edited overrides file cannot
+// widen privileges either. Privilege keys are dropped and reported; any other
+// invalid value voids the whole file (reported), never half applied.
+function sane(raw: any): { o: Overrides; error?: string } {
+  const dropped: string[] = []
+  if (isObj(raw)) {
+    raw = { ...raw }
+    for (const [sec, key] of [['lead', 'permissionMode'], ['lead', 'allowedTools'], ['worker', 'permissionMode']]) {
+      if (isObj(raw[sec]) && key in raw[sec]) { raw[sec] = { ...raw[sec] }; delete raw[sec][key]; dropped.push(`${sec}.${key}`) }
+    }
+  }
+  const note = dropped.length ? `ignored ${dropped.join(', ')} (edit config.json by hand)` : undefined
+  try {
+    const p = validatePatch(raw)
+    const o: Overrides = {}
+    for (const k of Object.keys(p)) if (p[k] !== null) (o as any)[k] = p[k]
+    return { o, error: note }
+  } catch (e) {
+    return { o: {}, error: `overrides file ignored: ${(e as Error).message}` }
+  }
+}
+
+function merge(user: Partial<Config>, over: Overrides): Config {
+  const u = user as any
+  const tiers: Config['tiers'] = { ...DEFAULTS.tiers, ...u.tiers }
+  for (const [n, t] of Object.entries(over.tiers ?? {})) tiers[n] = { ...tiers[n], ...t }
+  return {
     ...DEFAULTS,
     ...user,
-    tiers: { ...DEFAULTS.tiers, ...user.tiers },
-    worker: { ...DEFAULTS.worker, ...user.worker },
-    lead: { ...DEFAULTS.lead, ...user.lead },
+    ...(over.provisionalMinutes !== undefined ? { provisionalMinutes: over.provisionalMinutes } : {}),
+    ...(over.commitDebounceMs !== undefined ? { commitDebounceMs: over.commitDebounceMs } : {}),
+    tiers,
+    worker: { ...DEFAULTS.worker, ...user.worker, ...over.worker },
+    lead: { ...DEFAULTS.lead, ...user.lead, ...over.lead },
   }
-  return cached
+}
+
+const stamp = (f: string) => {
+  try { return statSync(f).mtimeMs + ':' + statSync(f).size } catch { return '-' }
+}
+
+export type Layers = { defaults: Config; file: Partial<Config>; overrides: Overrides; overridesError?: string; effective: Config }
+let cached: { key: string; layers: Layers } | undefined
+
+// Re-read when either file changes, so page edits and hand edits apply without
+// a server restart; each spawn calls config() afresh.
+export function configLayers(): Layers {
+  const key = stamp(configFile()) + '|' + stamp(overridesFile())
+  if (cached?.key === key) return cached.layers
+  const file: Partial<Config> = readJsonFile(configFile())
+  let overrides: Overrides = {}
+  let overridesError: string | undefined
+  try {
+    const r = sane(readJsonFile(overridesFile()))
+    overrides = r.o
+    overridesError = r.error
+  } catch (e) { overridesError = `overrides file unreadable: ${(e as Error).message}` }
+  const layers = { defaults: DEFAULTS, file, overrides, overridesError, effective: merge(file, overrides) }
+  cached = { key, layers }
+  return layers
+}
+
+export function config(): Config {
+  return configLayers().effective
 }
