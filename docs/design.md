@@ -55,7 +55,7 @@ One inbox across rooms, alarms for stuck rooms, a single card layout for every k
 
 ## Storage backend
 
-Room records and the runtime state (inbox, lease, receipts) are read and written through one interface, `Backend` in `src/backend.ts`: `read`, `write`, `append`, `exists`, `list`, `remove`, `claim`, keyed by the path the local layout would use. Files under `ROOMS_HOME` and `STATE` are the default. `CLAUDE_ROOMS_BACKEND=<module path>` loads another implementation (the module's default export is a `Backend`, or a function returning one). Locks, git, worker scratch folders, `turn.json`/`turns.log`, sessions and sandbox settings describe this machine and stay local.
+Room records and the runtime state (inbox, lease, receipts) are read and written through one interface, `Backend` in `src/backend.ts`: `read`, `write`, `append`, `exists`, `list`, `remove`, `claim`, keyed by the path the local layout would use. Files under `ROOMS_HOME` and `STATE` are the default. `CLAUDE_ROOMS_BACKEND=<module path>` loads another implementation (the module's default export is a `Backend`, or a function returning one). Per host, `STATE/backend.json` — `{"module": "<path>", "rooms": ["room-a"], "settings": {...}}` — routes every key of the listed rooms (`ROOMS_HOME/<room>/...`, `STATE/rooms/<room>/...`) to that module, which is called with `settings` (hub URL, host id, token file path, ...); all other rooms stay on local files, and room listings merge both. `CLAUDE_ROOMS_BACKEND`, when set, wins; with neither, everything is local. Remove a room from the list and it is local again. Locks, git, worker scratch folders, `turn.json`/`turns.log`, sessions and sandbox settings describe this machine and stay local.
 
 ## Not built yet
 

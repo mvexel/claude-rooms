@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { type Backend, useBackend, localBackend } from '../src/backend.ts'
+import { type Backend, useBackend, localBackend, routed } from '../src/backend.ts'
 import { Record } from '../src/record.ts'
 import { Room } from '../src/room.ts'
 import { emit, pending, take } from '../src/events.ts'
@@ -102,4 +102,102 @@ test('a backend module missing a method is refused with its name', () => {
   })
   assert.notEqual(r.status, 0)
   assert.match(r.stderr, /CLAUDE_ROOMS_BACKEND .*no read\(\)/)
+})
+
+test('routed rooms go to the module, other rooms stay local, listings merge', () => {
+  const remote = memory()
+  const local = memory()
+  const home = '/r/rooms'
+  const state = '/r/state'
+  process.env.CLAUDE_ROOMS_HOME = home
+  process.env.CLAUDE_ROOMS_STATE = state
+  try {
+    const b = routed(local, remote, ['hub'])
+    b.write(`${home}/hub/BRIEF.md`, 'h')
+    b.write(`${home}/mine/BRIEF.md`, 'm')
+    b.append(`${state}/rooms/hub/inbox.jsonl`, 'x\n')
+    b.append(`${state}/rooms/mine/inbox.jsonl`, 'y\n')
+    b.write(`${state}/scratch/hub/T01/f`, 'scratch') // not a room key: local
+    assert.deepEqual([...remote.files.keys()].sort(), [`${home}/hub/BRIEF.md`, `${state}/rooms/hub/inbox.jsonl`])
+    assert.deepEqual([...local.files.keys()].sort(), [`${home}/mine/BRIEF.md`, `${state}/rooms/mine/inbox.jsonl`, `${state}/scratch/hub/T01/f`])
+    assert.equal(b.read(`${home}/hub/BRIEF.md`), 'h')
+    assert.equal(b.read(`${home}/mine/BRIEF.md`), 'm')
+    assert.equal(b.claim(`${state}/rooms/hub/inbox.jsonl`), 'x\n')
+    assert.equal(b.exists(`${state}/rooms/hub/inbox.jsonl`), false)
+    // a stale local copy of a routed room is not listed; the routed one is
+    local.write(`${home}/hub/BRIEF.md`, 'stale')
+    remote.write(`${home}/other/BRIEF.md`, 'not listed in the file')
+    assert.deepEqual(b.list(home).map(e => e.name).sort(), ['hub', 'mine'])
+    assert.equal(b.exists(`${home}/hub`), true)
+    b.remove(`${home}/hub`)
+    assert.equal(b.read(`${home}/hub/BRIEF.md`), undefined)
+    assert.equal(local.read(`${home}/hub/BRIEF.md`), 'stale')
+    // removed from the list: local again
+    const back = routed(local, remote, [])
+    assert.equal(back.read(`${home}/hub/BRIEF.md`), 'stale')
+    assert.deepEqual(back.list(home).map(e => e.name).sort(), ['hub', 'mine'])
+  } finally {
+    delete process.env.CLAUDE_ROOMS_HOME
+    delete process.env.CLAUDE_ROOMS_STATE
+  }
+})
+
+test('STATE/backend.json routes the listed rooms for the CLI; the env var wins; no file means files', () => {
+  const base = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'rooms-routing-'))
+  const log = join(base, 'calls.log')
+  const state = join(base, 'state')
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CLAUDE_ROOMS_HOME: join(base, 'rooms'),
+    CLAUDE_ROOMS_STATE: state,
+    CLAUDE_ROOMS_CONFIG: join(base, 'none.json'),
+    CLAUDE_ROOMS_CLAUDE: '/bin/false',
+    BACKEND_LOG: log,
+    GIT_AUTHOR_NAME: 't',
+    GIT_AUTHOR_EMAIL: 't@example.invalid',
+    GIT_COMMITTER_NAME: 't',
+    GIT_COMMITTER_EMAIL: 't@example.invalid',
+  }
+  delete env.CLAUDE_ROOMS_BACKEND
+  const rooms = (e: NodeJS.ProcessEnv, ...args: string[]) => spawnSync(process.execPath, ['--no-warnings', CLI, ...args], { env: e, encoding: 'utf8' })
+  const repo = (name: string) => {
+    const dir = join(base, name)
+    mkdirSync(dir)
+    spawnSync('git', ['init', '-q', dir])
+    return dir
+  }
+  const ok = (...args: string[]) => {
+    const r = rooms(env, ...args)
+    assert.equal(r.status, 0, r.stderr + r.stdout)
+    return r.stdout
+  }
+  const routing = (rooms: string[]) =>
+    writeFileSync(join(state, 'backend.json'), JSON.stringify({ module: resolve(import.meta.dirname, 'support', 'logging-backend.ts'), rooms, settings: { hub: 'https://hub.example' } }))
+  ok('init')
+  ok('new', 'mine', 'Mine', '--session', 'l1', '--repo', repo('r1'))
+  assert.equal(existsSync(log), false) // no file: no module
+
+  routing(['hubbed'])
+  ok('new', 'hubbed', 'Hubbed', '--session', 'l2', '--repo', repo('r2'))
+  ok('add', 'mine', 'local thing')
+  const calls = readFileSync(log, 'utf8')
+  assert.match(calls, /^settings \{"hub":"https:\/\/hub\.example"\}$/m)
+  assert.match(calls, /^write .*hubbed\/BRIEF\.md$/m)
+  assert.doesNotMatch(calls, /mine\//)
+  // both rooms are seen
+  const status = ok('status')
+  assert.match(status, /mine/)
+  assert.match(status, /hubbed/)
+
+  // env wins over the file: the file's settings are never passed
+  writeFileSync(log, '')
+  const viaEnv = rooms({ ...env, CLAUDE_ROOMS_BACKEND: resolve(import.meta.dirname, 'support', 'logging-backend.ts') }, 'status')
+  assert.equal(viaEnv.status, 0, viaEnv.stderr)
+  assert.doesNotMatch(readFileSync(log, 'utf8'), /^settings/m)
+
+  // removed from the list: back to local files, module not loaded
+  routing([])
+  writeFileSync(log, '')
+  ok('add', 'hubbed', 'now local')
+  assert.equal(readFileSync(log, 'utf8'), '')
 })

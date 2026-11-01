@@ -5,7 +5,8 @@ import { localBackend, type Backend } from '../../src/backend.ts'
 // module chosen with CLAUDE_ROOMS_BACKEND.
 const note = (op: string, path: string) => appendFileSync(process.env.BACKEND_LOG!, `${op} ${path}\n`)
 
-export default function (): Backend {
+export default function (settings?: unknown): Backend {
+  if (settings) note('settings', JSON.stringify(settings))
   return {
     read: p => (note('read', p), localBackend.read(p)),
     write: (p, t) => (note('write', p), localBackend.write(p, t)),
