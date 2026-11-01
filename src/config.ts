@@ -48,7 +48,7 @@ export type Config = {
   // Codex workers: their own model and effort (Codex ids, never Claude tiers)
   // and sandbox. Unset model/effort mean Codex's own configured default.
   // File-only: the sandbox is a privilege, so the page cannot change it.
-  codex: { model?: string; effort?: string; sandbox: string; addDirs: string[] }
+  codex: { model?: string; effort?: string; sandbox: string; addDirs: string[]; network?: boolean }
   provisionalMinutes: number // a two-way default applies this long after it is set, at least 30
   commitDebounceMs: number
   hallMonitor: { maxThreads: number; queueLimit: number } // parallel workers per room; items that may wait on one role before it is cloned

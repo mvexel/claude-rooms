@@ -1,6 +1,7 @@
 import { config } from './config.ts'
 import type { Room } from './room.ts'
-import { type Session, findSession, isRunning, listSessions } from './sessions.ts'
+import { type Session, listSessions } from './sessions.ts'
+import { workerOf } from './workers.ts'
 import { heldItems, readyUnstaffed } from './state.ts'
 
 // The hall monitor. A team member is an item `owner` role and takes one item
@@ -19,7 +20,7 @@ export function hallMonitor(room: Room, sessions: Session[] = listSessions()): P
   const items = room.items()
   const running = items.filter(i => {
     const agent = i.get('agent')
-    return i.get('state') === 'doing' && !!agent && isRunning(findSession(agent, sessions) ?? agent, sessions)
+    return i.get('state') === 'doing' && !!agent && workerOf(room.name, i, sessions).live === 'alive'
   })
   const ready = readyUnstaffed(room)
   const held = heldItems(room, ready)

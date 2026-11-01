@@ -18,12 +18,13 @@ import { type Liveness, pidLiveness } from './sessions.ts'
 // when the runner vanished.
 
 export type RunState = 'starting' | 'running' | 'idle' | 'failed'
-export type RunSpec = { cwd: string; who: string; scratch: string; model?: string; effort?: string; sandbox: string; addDirs: string[] }
+export type RunSpec = { cwd: string; who: string; scratch: string; model?: string; effort?: string; sandbox: string; addDirs: string[]; network?: boolean }
 export type Run = {
   runId: string
   state: RunState
   startedAt: string
   pid?: number // the runner
+  codexPid?: number // codex itself; its own process group, so it outlives a killed runner
   threadId?: string
   exitCode?: number | null
   error?: string
@@ -62,6 +63,15 @@ function lockHolder(room: string, id: string): number | undefined {
   }
 }
 
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0)
+    return true
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
 // Is this item's Codex run going? 'unknown' only when there is no run record
 // for an item that claims a worker (a lost state dir): never a reason to spawn.
 export function codexLiveness(room: string, id: string): { live: Liveness; state: RunState | 'none'; run?: Run } {
@@ -73,6 +83,8 @@ export function codexLiveness(room: string, id: string): { live: Liveness; state
     const l = pidLiveness(pid)
     if (l !== 'dead') return { live: l, state: run.state, run }
   }
+  // A killed runner does not stop codex (own process group): still a live worker.
+  if (run.codexPid && groupAlive(run.codexPid)) return { live: 'alive', state: run.state, run }
   // No runner yet: it was just started and has not taken its lock.
   if (Date.now() - Date.parse(run.startedAt) < START_GRACE_MS && !run.pid) return { live: 'alive', state: 'starting', run }
   return { live: 'dead', state: run.state, run }
@@ -90,22 +102,27 @@ export function codexArgs(spec: RunSpec, prompt: string): string[] {
   const args = ['exec', '--json', '-s', spec.sandbox, '-c', 'approval_policy="never"']
   if (spec.model) args.push('-m', spec.model)
   if (spec.effort) args.push('-c', `model_reasoning_effort=${JSON.stringify(spec.effort)}`)
+  if (spec.network) args.push('-c', 'sandbox_workspace_write.network_access=true')
   args.push('-C', spec.cwd)
   for (const d of spec.addDirs) args.push('--add-dir', d)
   args.push('--', prompt)
   return args
 }
 
-function gitCommonDir(cwd: string): string | undefined {
-  const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' })
+function gitDir(cwd: string, what: string): string | undefined {
+  const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--path-format=absolute', what], { encoding: 'utf8' })
   return r.status === 0 ? r.stdout.trim() : undefined
 }
 
-export function specFor(cwd: string, who: string, scratch: string): RunSpec {
+// A worktree commit writes the repo's common dir and the worktree's own git
+// dir (<repo>/.git/worktrees/<wt>); the rooms CLI commits ROOMS_HOME/.git.
+// A routed room's records are on the hub, so the sandbox needs network.
+export function specFor(cwd: string, who: string, scratch: string, routed = false): RunSpec {
   const c = config().codex
-  const git = existsSync(cwd) ? gitCommonDir(cwd) : undefined
-  const addDirs = [...new Set([scratch, roomsHome(), stateDir(), ...(git ? [git] : []), ...c.addDirs].map(d => resolve(d)))]
-  return { cwd, who, scratch, model: c.model, effort: c.effort, sandbox: c.sandbox, addDirs }
+  const repo = existsSync(cwd) ? [gitDir(cwd, '--git-common-dir'), gitDir(cwd, '--absolute-git-dir')] : []
+  const roomsGit = join(roomsHome(), '.git')
+  const addDirs = [...new Set([scratch, roomsHome(), stateDir(), ...repo, ...(existsSync(roomsGit) ? [roomsGit] : []), ...c.addDirs].filter((d): d is string => !!d).map(d => resolve(d)))]
+  return { cwd, who, scratch, model: c.model, effort: c.effort, sandbox: c.sandbox, addDirs, network: routed || c.network === true }
 }
 
 // The worker instructions Codex gets inline (it has no Claude plugin to load).
@@ -122,21 +139,22 @@ export function codexInstructions(room: string, id: string, who: string): string
   ].join('\n')
 }
 
-// Start a run (a first one, or a respawn): record it, then detach a runner.
-export function startCodex(room: string, id: string, spec: RunSpec, prompt: string): Run {
+// Record a run (prompt and state) before anything starts; the caller saves the
+// item, then calls launchCodex, so the runner never races the spawn's own save.
+export function newRun(room: string, id: string, spec: RunSpec, prompt: string): Run {
   const run: Run = { runId: `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, state: 'starting', startedAt: new Date().toISOString(), spec }
   mkdirSync(dirname(runFile(room, id)), { recursive: true })
   writeFileSync(`${runBase(room, id)}.prompt`, prompt)
   writeRun(room, id, run)
-  const log = openSync(`${runBase(room, id)}.log`, 'a')
-  const env = { ...process.env }
-  const child = spawn(process.execPath, ['--no-warnings', join(ROOT, 'cli', 'rooms.ts'), 'run-codex', room, id], { detached: true, stdio: ['ignore', log, log], env })
-  closeSync(log)
-  child.unref()
   return run
 }
 
-const lines = (text: string) => text.split('\n').filter(Boolean)
+export function launchCodex(room: string, id: string): void {
+  const log = openSync(`${runBase(room, id)}.log`, 'a')
+  const child = spawn(process.execPath, ['--no-warnings', join(ROOT, 'cli', 'rooms.ts'), 'run-codex', room, id], { detached: true, stdio: ['ignore', log, log], env: { ...process.env } })
+  closeSync(log)
+  child.unref()
+}
 
 // The runner: takes the lock, runs codex, records the outcome, tells the lead.
 export async function runCodex(room: string, id: string): Promise<void> {
@@ -160,10 +178,16 @@ export async function runCodex(room: string, id: string): Promise<void> {
   for (const k of ['CLAUDE_ROOMS_SESSION', 'CLAUDE_CODE_SESSION_ID', 'ROOMS_TURN']) delete env[k]
   let sawCompleted = false
   let failure = ''
+  let lastError = '' // a top-level error alone is not a failure: codex may report non-fatal ones
   let stderr = ''
   let exit: number | null = null
-  const child = spawn(codexBin(), codexArgs(spec, prompt), { cwd: spec.cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
-  const stop = () => child.kill('SIGTERM')
+  // Its own process group, so a killed runner leaves a worker that liveness still sees.
+  const child = spawn(codexBin(), codexArgs(spec, prompt), { cwd: spec.cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+  if (child.pid) {
+    run.codexPid = child.pid
+    writeRun(room, id, run)
+  }
+  const stop = () => { try { process.kill(-child.pid!, 'SIGTERM') } catch {} }
   process.on('SIGTERM', () => { failure ||= 'runner terminated'; stop() })
   let buf = ''
   const eventLog = `${runBase(room, id)}.jsonl`
@@ -176,7 +200,7 @@ export async function runCodex(room: string, id: string): Promise<void> {
       recordSession(room, id, e.thread_id)
     } else if (e.type === 'turn.completed') sawCompleted = true
     else if (e.type === 'turn.failed') failure = e.error?.message || 'turn failed'
-    else if (e.type === 'error' && !failure) failure = e.message || ''
+    else if (e.type === 'error') lastError = e.message || ''
     writeRun(room, id, run)
   }
   child.stdout.on('data', d => {
@@ -200,7 +224,7 @@ export async function runCodex(room: string, id: string): Promise<void> {
     if (it.get('state') === 'doing') emit(room, `${id}'s Codex turn ended but the item is still doing and no rooms done or rooms need came from it. Read its Log and Result; rooms tell ${room} --item ${id} "<what is missing>" or re-plan.`)
   } else {
     run.state = 'failed'
-    run.error = failure || stderr.trim().split('\n').pop() || `codex exited with ${exit}`
+    run.error = failure || lastError || stderr.trim().split('\n').pop() || `codex exited with ${exit}`
     emit(room, `${id}'s Codex run failed (${run.error}). The item is still ${it.get('state')}, nothing was marked done. Check ${runBase(room, id)}.jsonl, then rooms spawn ${room} ${id} --backend codex to start again, or reassign it.`)
   }
   run.notified = true

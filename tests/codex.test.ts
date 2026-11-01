@@ -132,13 +132,53 @@ test('a duplicate spawn is refused while the run is live, also after the server 
   const unk = s.rooms('spawn', 'r', 'T01', '--backend', 'codex')
   assert.match(unk.err, /may be alive/)
   writeFileSync(s.runFile, saved)
-  // kill the runner: sweep reports an unexpected exit once
-  process.kill(s.run().pid, 'SIGKILL')
-  await s.wait(() => { try { process.kill(s.run().pid, 0); return false } catch { return true } })
+  // kill -9 the runner: codex lives on in its own process group, so it is still a live worker
+  const dead = (pid: number) => { try { process.kill(pid, 0); return false } catch { return true } }
+  const { pid, codexPid } = s.run()
+  assert.ok(codexPid)
+  process.kill(pid, 'SIGKILL')
+  await s.wait(() => dead(pid))
+  s.ok('sweep')
+  assert.equal(s.run().state, 'running')
+  assert.doesNotMatch(s.inbox(), /exited unexpectedly/)
+  assert.match(s.rooms('spawn', 'r', 'T01', '--backend', 'codex').err, /already has a live worker/)
+  // once codex is gone too, sweep reports the unexpected exit, once
+  process.kill(-codexPid, 'SIGKILL')
+  await s.wait(() => { try { process.kill(-codexPid, 0); return false } catch { return true } })
   s.ok('sweep')
   assert.equal(s.run().state, 'failed')
-  assert.match(s.inbox(), /exited unexpectedly/)
-  const n = s.inbox().split('\n').filter(l => /exited unexpectedly/.test(l)).length
+  const count = () => s.inbox().split('\n').filter(l => /exited unexpectedly/.test(l)).length
+  assert.equal(count(), 1)
   s.ok('sweep')
-  assert.equal(s.inbox().split('\n').filter(l => /exited unexpectedly/.test(l)).length, n)
+  assert.equal(count(), 1)
+})
+
+test('codex that exits nonzero without an outcome is a failed run; rooms done from codex is not re-flagged', async () => {
+  const s = sandbox()
+  s.env.FAKE_CODEX_MODE = 'crash'
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'failed')
+  assert.match(s.inbox(), /Codex run failed \(codex exited with 3\)/)
+  assert.equal(s.item().get('state'), 'doing')
+  s.env.FAKE_CODEX_MODE = 'done'
+  s.env.FAKE_CODEX_DONE = `${process.execPath} --no-warnings ${CLI} set r T01 state=review`
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => s.run().state === 'idle')
+  assert.equal(s.item().get('state'), 'review')
+  assert.equal((s.inbox().match(/turn ended but the item is still doing/g) ?? []).length, 0)
+  // the respawn did not duplicate the Worktree line in the prompt
+  const prompt = readFileSync(join(s.env.CLAUDE_ROOMS_STATE!, 'runs', 'r', 'T01.prompt'), 'utf8')
+  assert.equal(prompt.split('- Worktree:').length - 1, 1)
+})
+
+test('codex sandbox covers the worktree git dir and the rooms git; network only when asked', async () => {
+  const s = sandbox()
+  s.ok('spawn', 'r', 'T01', '--backend', 'codex')
+  await s.wait(() => existsSync(s.runFile) && s.run().state === 'idle')
+  const args = readFileSync(s.env.FAKE_CODEX_LOG!, 'utf8').split('\n').find(l => l.startsWith('ARGS:'))!
+  assert.match(args, /--add-dir \S+\/\.git\/worktrees\/\S+/)
+  assert.match(args, /--add-dir \S+\/rooms\/\.git(?: |$)/)
+  assert.doesNotMatch(args, /network_access/)
+  const a = codexArgs({ cwd: '/w', who: 'x', scratch: '/s', sandbox: 'workspace-write', addDirs: [], network: true }, 'p')
+  assert.ok(a.includes('sandbox_workspace_write.network_access=true'))
 })

@@ -19,7 +19,7 @@ import { isHuman, roomState, tryRoomState } from './state.ts'
 import { roomStatusLine, statusText } from './status.ts'
 import { repositoryIdentity, repositoryRoot, workerWorktree } from './repositories.ts'
 import { BACKENDS, workerOf } from './workers.ts'
-import { codexInstructions, reconcileCodex, runCodex, specFor, startCodex } from './codex.ts'
+import { codexInstructions, reconcileCodex, runCodex, specFor, newRun, launchCodex } from './codex.ts'
 import { pruneCandidates, pruneRoom } from './prune.ts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -793,7 +793,8 @@ function cmdSpawn(a: Args): string {
       const w = spawnSync('git', ['-C', repo, 'worktree', 'add', cwd, '-b', branch, base], { encoding: 'utf8' })
       if (w.status !== 0) fail(`git worktree add failed: ${w.stderr.trim()}`)
     }
-    it.appendTo('Inputs', `- Worktree: ${cwd} (branch ${branch} from ${base})`)
+    const line = `- Worktree: ${cwd} (branch ${branch} from ${base})`
+    if (!it.section('Inputs').includes(line)) it.appendTo('Inputs', line)
   }
   const scratch = scratchDir(r.name, id)
   try {
@@ -819,7 +820,7 @@ function cmdSpawn(a: Args): string {
     .filter(Boolean)
     .join('\n')
   if (codex) {
-    const run = startCodex(r.name, id, { ...specFor(cwd, who, scratch), model, effort }, prompt)
+    const run = newRun(r.name, id, { ...specFor(cwd, who, scratch, isRouted(r.name)), model, effort }, prompt)
     it.set('backend', 'codex')
     if (clone && who === clone) it.set('clone', clone)
     it.set('state', 'doing')
@@ -827,6 +828,7 @@ function cmdSpawn(a: Args): string {
     logLine(it, by(), `set state=doing; spawned ${who} (codex run ${run.runId}) in ${cwd}; model: ${model ?? 'codex default'}, effort: ${effort ?? 'codex default'}`)
     it.save()
     publishWorking(r, it)
+    launchCodex(r.name, id) // after the item is saved: the runner edits it too
     changed(r, `${id} spawned`)
     return [...warns, `${id}: ${who} started (codex run ${run.runId}, ${model ?? 'codex default model'})`].join('\n')
   }
