@@ -46,6 +46,16 @@ Start the page with `rooms serve` and open <http://127.0.0.1:8787/>. Open `claud
 
 The design and the reasoning behind it are in [docs/design.md](docs/design.md); the page's API is in [docs/ui.md](docs/ui.md).
 
+**Codex workers.** `rooms spawn <room> Tnn --backend codex` runs an item with `codex exec --json` instead of a Claude session: a detached runner (`rooms run-codex`) starts Codex in the item's worktree with the worker rules inline, and records `backend: codex`, `agent: codex:<runId>` and `codex_session` (the thread id) on the item. Codex needs the `codex` CLI on `PATH` (or `CLAUDE_ROOMS_CODEX`). It ignores Claude tiers and `--permission-mode`; its model, effort and sandbox come from `codex` in `config.json` (file-only, the page cannot change them):
+
+```json
+{ "codex": { "model": "gpt-5-codex", "effort": "medium", "sandbox": "workspace-write", "addDirs": [], "network": false } }
+```
+
+`model` and `effort` unset mean Codex's own default; `sandbox` defaults to `workspace-write`; `addDirs` are extra writable roots on top of the scratch folder, `~/rooms`, the state dir and the worktree's git dirs; `network` turns on network access (always on for a routed room, whose records are on the hub). Codex runs get `commit.gpgsign=false` through `GIT_CONFIG_COUNT/KEY/VALUE` in their environment only (the sandbox has no gpg agent); the repo's own config is untouched.
+
+`rooms tell <room> "..." --item Tnn` queues a message in a spool directory. A running Codex worker gets it in its next turn; an idle or failed one is resumed on the same thread by id (never `--last`), one runner draining every queued message. A resume that fails before its turn starts puts the messages back at the head of the queue; with no thread to resume the tell is held. A turn that ends with the item still `doing`, a failed run, and a runner that vanished (found by sweep, which also restores messages an orphaned runner had claimed) each tell the lead.
+
 **Hall monitor.** Past `hallMonitor.queueLimit` parallel-ready items waiting behind one `owner` role, the excess `rooms status` names clones ("dev 2") and `rooms spawn` starts them under that name; `hallMonitor.maxThreads` (default 4) caps running workers per room, and spawn refuses beyond it unless `--over-cap`. Both are editable on the Settings page; see Configuration in the docs.
 
 ## Develop
