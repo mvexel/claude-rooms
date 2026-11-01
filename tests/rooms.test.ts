@@ -459,6 +459,33 @@ test('worker worktrees are named from the main repo root, and research items get
   assert.equal(existsSync(`${real}-r-t02`), false)
 })
 
+test('spawn without --repo uses the room repo and a fresh worktree, not the caller\'s cwd', () => {
+  const s = sandbox()
+  const repo = join(s.home, 'proj')
+  gitRepo(s, repo)
+  s.ok('new', 'r', 'Room', '--repo', repo)
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  const elsewhere = join(s.home, 'elsewhere')
+  mkdirSync(elsewhere)
+  // spawn fails at claude --bg (/bin/false); the worktree is made before that
+  spawnSync(process.execPath, ['--no-warnings', CLI, 'spawn', 'r', 'T01'], { env: s.env, cwd: elsewhere, encoding: 'utf8' })
+  assert.ok(existsSync(`${realpathSync(repo)}-r-t01`))
+  assert.equal(existsSync(join(elsewhere, '.git')), false)
+})
+
+test('spawn without --repo and without a repo in the brief refuses to start', () => {
+  const s = sandbox()
+  s.ok('new', 'r', 'Room', '--repo', s.home)
+  const brief = Record.load(join(s.home, 'r', 'BRIEF.md'))
+  brief.set('repos', [])
+  brief.save()
+  s.ok('add', 'r', 'Build', '--cap', '1', '--acc', 'works', '--in', 'spec')
+  const r = s.rooms('spawn', 'r', 'T01')
+  assert.notEqual(r.code, 0)
+  assert.match(r.err, /has no repo in BRIEF\.md; pass --repo/)
+  assert.equal(s.file('r', 'items', 'T01').includes('state: doing'), false)
+})
+
 test('prune lists done items\' worktrees and removes only merged, clean ones', () => {
   const s = sandbox()
   const repo = join(s.home, 'proj')
